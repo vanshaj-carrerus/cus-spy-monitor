@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "cus-spy-monitor",
-  "version": "0.1.0",
-  "identifier": "com.metamonitor.app",
+  "version": "0.1.1",
+  "identifier": "com.cusspy.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -36,6 +36,14 @@
     ]
   },
   "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/vanshaj-carrerus/cus-spy-monitor/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg3RDA4MjU0M0FFRTE0NUYKUldSZkZPNDZWSUxRaDJWdG9MdWVZck5oR0M4aCtTenVLTzc2a3BrUi9rTzJibkloMzMvNzZXdmUK"
+    },
     "shell": {}
   }
 }

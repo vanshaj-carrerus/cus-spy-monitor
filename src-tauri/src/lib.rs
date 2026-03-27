@@ -67,3 +67,32 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+
+use tauri_plugin_updater::UpdaterExt;
+
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            let handle = app.handle().clone();
+            
+            // Check for updates every time the app starts
+            tauri::async_runtime::spawn(async move {
+                if let Ok(Some(update)) = handle.updater().unwrap().check().await {
+                    // Download and install silently
+                    if let Ok(_) = update.download_and_install(|_chunk_len, _content_len| {
+                        // Progress tracking (empty because we want it silent)
+                    }, || {
+                        // Download finished
+                    }).await {
+                        // Restart the app to apply the update
+                        handle.restart();
+                    }
+                }
+            });
+            Ok(())
+        })
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
