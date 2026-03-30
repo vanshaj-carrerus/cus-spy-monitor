@@ -6,6 +6,7 @@ import { createFullUser, loginUser } from "./lib/userService.js";
 import { Invite } from "./models/index.js";
 import { mouse, Button, Point } from "@nut-tree-fork/nut-js";
 import screenshot from "screenshot-desktop";
+//  re commit with cus id
 
 dotenv.config();
 
@@ -96,7 +97,7 @@ app.post('/api/track/start', (req, res) => {
     if (!userId) return res.status(400).json({ error: "userId required" });
 
     activeUserId = userId;
-    
+
     if (!trackerInterval) {
         trackerInterval = setInterval(sendHeartbeat, 30000); // 30 seconds
         console.log(`Tracker started for user: ${userId}`);
@@ -115,7 +116,7 @@ app.post('/api/track/heartbeat', async (req, res) => {
         const { userId, timestamp } = req.body;
         // Here you would update MongoDB
         // Example: await User.findByIdAndUpdate(userId, { $inc: { activeSeconds: 30 }, lastActive: timestamp });
-        
+
         console.log(`[DB UPDATE] Heartbeat received for ${userId} at ${timestamp}`);
         res.json({ success: true, message: "Heartbeat recorded" });
     } catch (err) {
