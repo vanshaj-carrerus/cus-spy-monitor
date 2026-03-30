@@ -75,11 +75,41 @@ app.post('/api/auth/invite', async (req, res) => {
 
 // --- Tracking & Heartbeat Logic ---
 let trackerInterval = null;
+let screenshotInterval = null;
 let activeUserId = null;
 const sessionId = crypto.randomUUID();
 let isFetchingHeartbeat = false;
 
 const HEARTBEAT_INTERVAL_MS = 60 * 1000; // 60 seconds
+const SCREENSHOT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+const captureAndUploadScreenshot = async () => {
+    if (!activeUserId) return;
+    try {
+        console.log(`Capturing screenshot for user: ${activeUserId}`);
+        const imgBuffer = await screenshot({ format: 'png' });
+        const base64Image = imgBuffer.toString('base64');
+
+        const response = await fetch(`${DASHBOARD_API_URL}/api/track/upload-screenshot`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId: activeUserId,
+                sessionId,
+                image: `data:image/png;base64,${base64Image}`,
+                timestamp: new Date().toISOString()
+            })
+        });
+
+        if (response.ok) {
+            console.log("Screenshot uploaded successfully");
+        } else {
+            console.error("Screenshot upload failed:", response.status);
+        }
+    } catch (err) {
+        console.error("Screenshot capture/upload failed:", err.message);
+    }
+};
 
 const sendHeartbeat = async () => {
     if (!activeUserId || isFetchingHeartbeat) return;
@@ -134,6 +164,15 @@ app.post('/api/track/start', async (req, res) => {
             console.log(`Tracker started for user: ${activeUserId}`);
             // Send initial heartbeat immediately
             sendHeartbeat();
+        }
+
+        if (!screenshotInterval) {
+            screenshotInterval = setInterval(captureAndUploadScreenshot, SCREENSHOT_INTERVAL_MS);
+            console.log(`Screenshot tracker started for user: ${activeUserId} (5min intervals)`);
+            // Capture initial screenshot immediately
+            setTimeout(() => {
+                captureAndUploadScreenshot();
+            }, 3000);
         }
 
         res.json({ success: true, message: "Tracking initialized" });
