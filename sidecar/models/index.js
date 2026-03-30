@@ -4,6 +4,7 @@ import Manager from './manager.js';
 import MarketingUser from './marketing_user.js';
 import SalesUser from './sales_user.js';
 import Invite from './invite.js';
+import TimeEntry from './time_entry.js';
 
 export {
     User,
@@ -11,5 +12,6 @@ export {
     Manager,
     MarketingUser,
     SalesUser,
-    Invite
+    Invite,
+    TimeEntry
 };
