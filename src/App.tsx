@@ -17,12 +17,12 @@ function App() {
   useEffect(() => {
     const savedUser = localStorage.getItem('user');
     const loggedIn = localStorage.getItem('isLoggedIn') === 'true';
-    
+
     if (savedUser && loggedIn) {
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser);
       setIsLoggedIn(true);
-      
+
       // Notify sidecar to start tracking on launch if already logged in
       startTracking(parsedUser.id || parsedUser.username);
     }
@@ -57,7 +57,7 @@ function App() {
     setIsLoggedIn(true);
     localStorage.setItem('user', JSON.stringify(userData));
     localStorage.setItem('isLoggedIn', 'true');
-    
+
     // Trigger tracking in sidecar immediately after login
     startTracking(userData.id || userData.username);
   };
@@ -78,7 +78,7 @@ function App() {
       <div className="tracker-card">
         <div className="tracker-header">
           <div className="brand">
-            <img src="/tauri.svg" alt="Logo" className="mini-logo" />
+            <img src="/app-logo.png" alt="Logo" className="mini-logo" />
             <span>CUS Spy</span>
           </div>
           <div className="status-indicator">
@@ -86,7 +86,7 @@ function App() {
             ACTIVE
           </div>
         </div>
-        
+
         <div className="tracker-body">
           <p className="user-welcome">Monitoring: <strong>{user?.username}</strong></p>
           <div className="time-display">

@@ -1,3 +1,5 @@
+// sidecar/index.js
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -12,7 +14,15 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middlewares
-app.use(cors());
+app.use(cors({
+    origin: [
+        "http://localhost:1420",   // Default Tauri dev port
+        "tauri://localhost",       // Standard Tauri production protocol
+        "http://tauri.localhost"    // Windows/Linux production protocol
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+}));
 app.use(express.json());
 
 // --- API Endpoints Proxying ---
