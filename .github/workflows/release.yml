@@ -3,7 +3,7 @@ name: 'publish'
 on:
   push:
     tags:
-      - 'v*' # Triggers when you push a tag like v0.1.0
+      - 'v*'
 
 jobs:
   publish:
@@ -24,29 +24,37 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          cache: 'npm' # Change to pnpm if you use it
+          cache: 'npm'
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Only install the target you actually need to save time
+          targets: x86_64-pc-windows-msvc
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          # This is the key for Windows: cache the target folder strictly
+          workspaces: "src-tauri -> target"
 
       - name: install dependencies
-        run: npm install # Change to pnpm install if needed
+        # 'npm ci' is faster and more reliable than 'npm install' in CI/CD
+        run: npm ci 
 
       - name: build frontend
         run: npm run build
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: build tauri app
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Optimization: Tells Rust to use more cores for the heavy lifting
+          CARGO_BUILD_JOBS: 4 
         with:
-          tagName: v__VERSION__ # Auto-reads version from tauri.conf.json
+          tagName: v__VERSION__
           releaseName: 'CUS Spy v__VERSION__'
           releaseBody: 'Automatic monitoring update.'
           releaseDraft: false

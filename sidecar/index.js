@@ -5,6 +5,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { mouse, Button, Point } from "@nut-tree-fork/nut-js";
 import screenshot from "screenshot-desktop";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -73,22 +74,25 @@ app.post('/api/auth/invite', async (req, res) => {
 });
 
 // --- Tracking & Heartbeat Logic ---
-// --- Tracking & Heartbeat Logic ---
 let trackerInterval = null;
 let activeUserId = null;
+const sessionId = crypto.randomUUID();
+let isFetchingHeartbeat = false;
 
-const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const HEARTBEAT_INTERVAL_MS = 60 * 1000; // 60 seconds
 
 const sendHeartbeat = async () => {
-    if (!activeUserId) return;
+    if (!activeUserId || isFetchingHeartbeat) return;
 
+    isFetchingHeartbeat = true;
     try {
-        console.log(`Sending heartbeat for user: ${activeUserId}`);
+        console.log(`Sending heartbeat for user: ${activeUserId} in session: ${sessionId}`);
         const response = await fetch(`${DASHBOARD_API_URL}/api/track/heartbeat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 userId: activeUserId,
+                sessionId,
                 timestamp: new Date().toISOString()
             })
         });
@@ -96,6 +100,8 @@ const sendHeartbeat = async () => {
         console.log("Heartbeat response:", data);
     } catch (err) {
         console.error("Heartbeat failed:", err.message);
+    } finally {
+        isFetchingHeartbeat = false;
     }
 };
 
@@ -158,3 +164,28 @@ app.listen(PORT, () => {
 });
 
 console.log("Sidecar Active");
+
+// graceful task termination handle
+const handleExit = async () => {
+    if (activeUserId) {
+        console.log("Process terminating, sending stop-session ping...");
+        try {
+            await fetch(`${DASHBOARD_API_URL}/api/track/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userId: activeUserId,
+                    sessionId,
+                    timestamp: new Date().toISOString()
+                })
+            });
+        } catch (err) {
+            console.error("Failed to send stop-session ping:", err.message);
+        }
+    }
+    process.exit(0);
+};
+
+process.on('SIGTERM', handleExit);
+process.on('SIGINT', handleExit);
+process.on('exit', handleExit);
