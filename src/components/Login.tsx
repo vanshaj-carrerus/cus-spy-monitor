@@ -46,7 +46,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         <div className="login-container">
             <div className="login-card">
                 <div className="login-header">
-                    <img src="/tauri.svg" alt="App Logo" className="login-logo" />
+                    <img src="/app-logo.png" alt="App Logo" className="login-logo" />
                     <h1>CUS Spy Monitor</h1>
                     <p>Secure login for agents and managers</p>
                 </div>

@@ -3,6 +3,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
+use tauri_plugin_updater::UpdaterExt;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -18,9 +19,26 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build()) // Added Updater Plugin
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-            // Setup Tray Menu
+            // 1. SETUP UPDATER LOGIC
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(Some(update)) = handle.updater().expect("failed to get updater").check().await {
+                    // Download and install silently
+                    let _ = update.download_and_install(|_chunk_len, _content_len| {
+                        // Progress tracking (empty for silence)
+                    }, || {
+                        // Download finished
+                    }).await;
+                    
+                    // Restart to apply
+                    handle.restart();
+                }
+            });
+
+            // 2. SETUP TRAY MENU
             let show_i = MenuItem::with_id(app, "show", "Show Dashboard", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
@@ -31,9 +49,10 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app: &AppHandle, event| match event.id.as_ref() {
                     "show" => {
-                        let window = app.get_webview_window("main").unwrap();
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
                     }
                     "quit" => {
                         app.exit(0);
@@ -59,40 +78,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // 3. PREVENT CLOSE (HIDE TO TRAY)
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 window.hide().unwrap();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
-
-
-use tauri_plugin_updater::UpdaterExt;
-
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            let handle = app.handle().clone();
-            
-            // Check for updates every time the app starts
-            tauri::async_runtime::spawn(async move {
-                if let Ok(Some(update)) = handle.updater().unwrap().check().await {
-                    // Download and install silently
-                    if let Ok(_) = update.download_and_install(|_chunk_len, _content_len| {
-                        // Progress tracking (empty because we want it silent)
-                    }, || {
-                        // Download finished
-                    }).await {
-                        // Restart the app to apply the update
-                        handle.restart();
-                    }
-                }
-            });
-            Ok(())
-        })
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
