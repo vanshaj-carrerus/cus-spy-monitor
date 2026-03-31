@@ -135,8 +135,79 @@ const sendHeartbeat = async () => {
     }
 };
 
+// --- Manual Triggers for Rust/Frontend ---
+app.post('/api/track/heartbeat', async (req, res) => {
+    const { userId, sessionId: reqSessionId, timestamp } = req.body;
+    if (userId) {
+        activeUserId = userId;
+        // Optionally update the local sessionId if provided
+        // or just use the one from the request for this specific call
+        const sid = reqSessionId || sessionId;
+
+        try {
+            console.log(`Manual heartbeat for user: ${userId}`);
+            const response = await fetch(`${DASHBOARD_API_URL}/api/track/heartbeat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userId,
+                    sessionId: sid,
+                    timestamp: timestamp || new Date().toISOString()
+                })
+            });
+            const data = await response.json();
+            res.json({ success: true, data });
+        } catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
+    } else {
+        res.status(400).json({ success: false, message: "userId required" });
+    }
+});
+
+app.post('/api/track/screenshot', async (req, res) => {
+    const { userId, sessionId: reqSessionId, timestamp } = req.body;
+    if (userId) {
+        activeUserId = userId;
+        const sid = reqSessionId || sessionId;
+
+        try {
+            console.log(`Manual screenshot for user: ${userId}`);
+            const imgBuffer = await screenshot({ format: 'jpg' });
+            const base64Image = imgBuffer.toString('base64');
+
+            const response = await fetch(`${DASHBOARD_API_URL}/api/track/upload-screenshot`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userId,
+                    sessionId: sid,
+                    image: `data:image/jpeg;base64,${base64Image}`,
+                    timestamp: timestamp || new Date().toISOString()
+                })
+            });
+            res.json({ success: response.ok });
+        } catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
+    } else {
+        res.status(400).json({ success: false, message: "userId required" });
+    }
+});
+
+app.get('/api/track/capture-image', async (req, res) => {
+    try {
+        console.log("Capturing image for frontend...");
+        const imgBuffer = await screenshot({ format: 'jpg' });
+        const base64Image = imgBuffer.toString('base64');
+        res.json({ success: true, image: `data:image/jpeg;base64,${base64Image}` });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.post('/api/track/start', async (req, res) => {
-    const { userId } = req.body;
+    const { userId, sessionId: incomingSessionId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
     try {
@@ -157,23 +228,21 @@ app.post('/api/track/start', async (req, res) => {
             return res.status(response.status || 400).json(data);
         }
 
-        activeUserId = data.userId || userId;
-
-        if (!trackerInterval) {
-            trackerInterval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
-            console.log(`Tracker started for user: ${activeUserId}`);
-            // Send initial heartbeat immediately
+        if (!activeUserId) {
+            activeUserId = data.userId || userId;
+            console.log(`Sidecar tracking initialized for user: ${activeUserId}`);
+            // Send initial heartbeat and screenshot immediately
             sendHeartbeat();
+            setTimeout(captureAndUploadScreenshot, 3000);
         }
 
-        if (!screenshotInterval) {
-            screenshotInterval = setInterval(captureAndUploadScreenshot, SCREENSHOT_INTERVAL_MS);
-            console.log(`Screenshot tracker started for user: ${activeUserId} (5min intervals)`);
-            // Capture initial screenshot immediately
-            setTimeout(() => {
-                captureAndUploadScreenshot();
-            }, 3000);
-        }
+        // Intervals are now driven by Rust/Frontend events to avoid throttling
+        // if (!trackerInterval) {
+        //     trackerInterval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+        // }
+        // if (!screenshotInterval) {
+        //     screenshotInterval = setInterval(captureAndUploadScreenshot, SCREENSHOT_INTERVAL_MS);
+        // }
 
         res.json({ success: true, message: "Tracking initialized" });
     } catch (err) {

@@ -13,9 +13,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "CUS Spy Monitor",
-        "width": 800,
-        "height": 600
+        "title": "CUS Monitor",
+        "width": 600,
+        "height": 400,
+        "resizable": false
       }
     ],
     "security": {

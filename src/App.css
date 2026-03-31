@@ -15,7 +15,8 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background-color: transparent; /* Allows for non-rectangular feel if desired, but Tauri windows have borders by default */
+  background-color: transparent;
+  /* Allows for non-rectangular feel if desired, but Tauri windows have borders by default */
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   color: var(--text-primary);
 }
@@ -87,9 +88,20 @@ body {
 }
 
 @keyframes pulse {
-  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  }
+
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+  }
+
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
 }
 
 .tracker-body {
@@ -125,7 +137,7 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
 }
 
 .tracker-footer {
