@@ -53,10 +53,22 @@ function App() {
   useEffect(() => {
     if (!isLoggedIn) return;
 
-    const unlistenHeartbeat = listen('heartbeat-tick', (event) => {
-      console.log("Rust triggered heartbeat");
+    // 1. Listen for the Rust send-heartbeat event (includes productive/unproductive data)
+    const unlistenHeartbeat = listen('send-heartbeat', async (event: any) => {
+      const payload = event.payload;
+      console.log("Rust heartbeat received:", payload);
       setElapsedTime(prev => prev + 60);
-      sendHeartbeatAPI();
+
+      try {
+        await fetch('https://cus-spy-admin-dashboard.vercel.app/api/track/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload), // Forward the full Rust payload as-is
+        });
+      } catch (err) {
+        console.error("Heartbeat network error:", err);
+      }
+
       takeScreenshotLogic();
     });
 
@@ -64,16 +76,12 @@ function App() {
       const payload = event.payload;
       console.log("New activity log received:", payload);
 
-      if (!user) return;
-      const uid = user._id || user.id || user.username;
-
       try {
         await fetch('https://cus-spy-admin-dashboard.vercel.app/api/activity-log', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            userId: uid,
-            machine_id: machineId,
+            userId: payload.user_id,   // Windows username from Rust
             title: payload.title,
             app_name: payload.app_name,
             start_time: payload.start_time,
@@ -100,24 +108,6 @@ function App() {
       window.removeEventListener('keydown', handleKeydown);
     };
   }, [isLoggedIn, machineId, user]);
-
-  const sendHeartbeatAPI = async () => {
-    if (!user || !sessionId) return;
-    const uid = user._id || user.id || user.username;
-    try {
-      await fetch('https://cus-spy-admin-dashboard.vercel.app/api/track/heartbeat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: uid,
-          sessionId,
-          timestamp: new Date().toISOString()
-        })
-      });
-    } catch (err) {
-      console.error("Manual heartbeat failed:", err);
-    }
-  };
 
   const SIDECAR_URL = "https://tauri.localhost";
 

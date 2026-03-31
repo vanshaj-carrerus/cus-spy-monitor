@@ -1,9 +1,10 @@
 use tauri::{Manager, Emitter, RunEvent};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri_plugin_updater::UpdaterExt;
 use serde::Serialize;
-use chrono::{Utc, DateTime};
+use chrono::Utc;
 use std::sync::{Arc, Mutex, OnceLock};
+use device_query::{DeviceQuery, DeviceState};
 
 // ─── Payload sent to the frontend ────────────────────────────────────────────
 #[derive(Serialize, Clone, Debug)]
@@ -15,11 +16,11 @@ struct ActivityLog {
     duration_seconds: u64,
 }
 
-// ─── Shared mutable tracking state ───────────────────────────────────────────
+// ─── Shared mutable tracking state (for window hook) ─────────────────────────
 struct TrackingState {
     last_title: String,
     last_app: String,
-    start_time: DateTime<Utc>,
+    start_time: chrono::DateTime<Utc>,
     user_id: String,
 }
 
@@ -243,13 +244,60 @@ pub fn run() {
                 }
             });
 
-            // Heartbeat tick every 60 s (drives screenshot + time-tracking on frontend)
+            // ─── Idle-aware heartbeat loop ─────────────────────────────────────────
+            // Runs every 1 s, accumulates productive / unproductive seconds,
+            // then emits "send-heartbeat" to the frontend every 60 s.
             let heartbeat_handle = app.handle().clone();
+            let hb_user_id = whoami::username();
+            let session_id = format!("session-{}", Utc::now().timestamp());
+
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                let device_state = DeviceState::new();
+
+                let mut productive_acc: u64 = 0;
+                let mut unproductive_acc: u64 = 0;
+                let mut last_input    = Instant::now();
+                let mut last_heartbeat = Instant::now();
+                let mut last_mouse_coords = (0i32, 0i32);
+
                 loop {
-                    interval.tick().await;
-                    let _ = heartbeat_handle.emit("heartbeat-tick", ());
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    // Check system-wide input (keyboard + mouse movement/clicks)
+                    let keys  = device_state.get_keys();
+                    let mouse = device_state.get_mouse();
+                    let coords = mouse.coords;
+                    let has_activity = !keys.is_empty()
+                        || coords != last_mouse_coords
+                        || mouse.button_pressed.iter().any(|&p| p);
+
+                    if has_activity {
+                        last_input = Instant::now();
+                        last_mouse_coords = coords;
+                    }
+
+                    // >60 s without input → unproductive
+                    if last_input.elapsed().as_secs() > 60 {
+                        unproductive_acc += 1;
+                    } else {
+                        productive_acc += 1;
+                    }
+
+                    // Emit heartbeat payload every 60 s
+                    if last_heartbeat.elapsed().as_secs() >= 60 {
+                        let payload = serde_json::json!({
+                            "userId": hb_user_id,
+                            "sessionId": session_id,
+                            "productiveSeconds": productive_acc,
+                            "unproductiveSeconds": unproductive_acc,
+                            "timestamp": Utc::now().to_rfc3339()
+                        });
+                        let _ = heartbeat_handle.emit("send-heartbeat", payload);
+
+                        productive_acc   = 0;
+                        unproductive_acc = 0;
+                        last_heartbeat   = Instant::now();
+                    }
                 }
             });
 
