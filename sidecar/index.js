@@ -87,7 +87,7 @@ const captureAndUploadScreenshot = async () => {
     if (!activeUserId) return;
     try {
         console.log(`Capturing screenshot for user: ${activeUserId}`);
-        const imgBuffer = await screenshot({ format: 'png' });
+        const imgBuffer = await screenshot({ format: 'jpg' });
         const base64Image = imgBuffer.toString('base64');
 
         const response = await fetch(`${DASHBOARD_API_URL}/api/track/upload-screenshot`, {
@@ -96,7 +96,7 @@ const captureAndUploadScreenshot = async () => {
             body: JSON.stringify({
                 userId: activeUserId,
                 sessionId,
-                image: `data:image/png;base64,${base64Image}`,
+                image: `data:image/jpeg;base64,${base64Image}`,
                 timestamp: new Date().toISOString()
             })
         });

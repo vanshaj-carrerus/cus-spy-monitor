@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CUS Spy Monitor",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "identifier": "com.cusspy.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "CUS Spy Monitor",
         "width": 800,
         "height": 600

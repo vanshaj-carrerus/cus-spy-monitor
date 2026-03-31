@@ -4,6 +4,7 @@ import "./App.css";
 
 interface User {
   id?: string;
+  _id?: string;
   username: string;
   role: string;
 }
@@ -24,7 +25,7 @@ function App() {
       setIsLoggedIn(true);
 
       // Notify sidecar to start tracking on launch if already logged in
-      startTracking(parsedUser.id || parsedUser.username);
+      startTracking(parsedUser._id || parsedUser.id || parsedUser.username);
     }
   }, []);
 
@@ -59,7 +60,7 @@ function App() {
     localStorage.setItem('isLoggedIn', 'true');
 
     // Trigger tracking in sidecar immediately after login
-    startTracking(userData.id || userData.username);
+    startTracking(userData._id || userData.id || userData.username);
   };
 
   const formatTime = (totalSeconds: number) => {
