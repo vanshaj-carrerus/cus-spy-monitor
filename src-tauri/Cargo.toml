@@ -1,6 +1,6 @@
 [package]
-name = "cus-spy-monitor"
-version = "0.1.9"
+name = "cus-monitor"
+version = "0.1.11"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
