@@ -16,7 +16,9 @@
         "title": "CUS Monitor",
         "width": 600,
         "height": 400,
-        "resizable": false
+        "resizable": false,
+        "focus": true,
+        "devtools": true
       }
     ],
     "security": {

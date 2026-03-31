@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import Login from "./components/Login";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 interface User {
@@ -44,6 +45,9 @@ function App() {
       setUser(parsedUser);
       setIsLoggedIn(true);
 
+      // Sync with Rust backend
+      syncUserWithRust(parsedUser);
+
       // Notify sidecar to start tracking on launch if already logged in
       startTracking(parsedUser._id || parsedUser.id || parsedUser.username);
     }
@@ -53,45 +57,15 @@ function App() {
   useEffect(() => {
     if (!isLoggedIn) return;
 
-    // 1. Listen for the Rust send-heartbeat event (includes productive/unproductive data)
+    // 1. Listen for the Rust send-heartbeat event (UI timer only)
     const unlistenHeartbeat = listen('send-heartbeat', async (event: any) => {
-      const payload = event.payload;
-      console.log("Rust heartbeat received:", payload);
+      console.log("Rust heartbeat received:", event.payload);
       setElapsedTime(prev => prev + 60);
-
-      try {
-        await fetch('https://cus-spy-admin-dashboard.vercel.app/api/track/heartbeat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload), // Forward the full Rust payload as-is
-        });
-      } catch (err) {
-        console.error("Heartbeat network error:", err);
-      }
-
       takeScreenshotLogic();
     });
 
-    const unlistenActivity = listen('new-activity-log', async (event: any) => {
-      const payload = event.payload;
-      console.log("New activity log received:", payload);
-
-      try {
-        await fetch('https://cus-spy-admin-dashboard.vercel.app/api/activity-log', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId: payload.user_id,   // Windows username from Rust
-            title: payload.title,
-            app_name: payload.app_name,
-            start_time: payload.start_time,
-            duration_seconds: payload.duration_seconds
-          })
-        });
-        console.log("Activity log sent successfully");
-      } catch (err) {
-        console.error("Failed to send activity log:", err);
-      }
+    const unlistenActivity = listen('new-activity-log', (event: any) => {
+      console.log("New activity log received (Reported by Rust):", event.payload);
     });
 
     // 2. Disable F5 and Ctrl+R manually in JS for extra safety
@@ -140,6 +114,19 @@ function App() {
     }
   };
 
+  const syncUserWithRust = async (userData: User) => {
+    const uid = userData._id || userData.id;
+    if (uid) {
+      try {
+        // This sends the MongoDB _id string directly to your Rust TrackingState
+        await invoke("set_active_user", { userId: uid });
+        console.log("User synced with Rust backend");
+      } catch (err) {
+        console.error("Failed to sync user with Rust:", err);
+      }
+    }
+  };
+
   const startTracking = async (userId: string) => {
     try {
       // Initialize sidecar with session info
@@ -159,6 +146,9 @@ function App() {
     setIsLoggedIn(true);
     localStorage.setItem('user', JSON.stringify(userData));
     localStorage.setItem('isLoggedIn', 'true');
+
+    // Sync with Rust backend
+    syncUserWithRust(userData);
 
     // Trigger tracking in sidecar immediately after login
     startTracking(userData._id || userData.id || userData.username);

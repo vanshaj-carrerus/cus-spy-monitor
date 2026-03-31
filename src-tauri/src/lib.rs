@@ -5,10 +5,15 @@ use serde::Serialize;
 use chrono::Utc;
 use std::sync::{Arc, Mutex, OnceLock};
 use device_query::{DeviceQuery, DeviceState};
+use reqwest::Client;
 
-// ─── Payload sent to the frontend ────────────────────────────────────────────
-#[derive(Serialize, Clone, Debug)]
+// ─── Shared HTTP Client ──────────────────────────────────────────────────────
+static CLIENT: OnceLock<Client> = OnceLock::new();
+
+// ─── Payload sent to the frontend and backend ────────────────────────────────
+#[derive(Serialize, Clone, Debug, serde::Deserialize)]
 struct ActivityLog {
+    #[serde(rename = "userId")]
     user_id: String,
     title: String,
     app_name: String,
@@ -136,16 +141,19 @@ mod win_tracker {
         if !state.last_title.is_empty() {
             let secs = now.signed_duration_since(state.start_time).num_seconds();
             if secs > 0 {
-                let _ = handle.emit(
-                    "new-activity-log",
-                    ActivityLog {
-                        user_id: state.user_id.clone(),
-                        title: state.last_title.clone(),
-                        app_name: state.last_app.clone(),
-                        start_time: state.start_time.to_rfc3339(),
-                        duration_seconds: secs as u64,
-                    },
-                );
+                let log = ActivityLog {
+                    user_id: state.user_id.clone(),
+                    title: state.last_title.clone(),
+                    app_name: state.last_app.clone(),
+                    start_time: state.start_time.to_rfc3339(),
+                    duration_seconds: secs as u64,
+                };
+
+                // Notify UI if open
+                let _ = handle.emit("new-activity-log", log.clone());
+
+                // Report to DB (from background)
+                post_activity_log(log);
             }
         }
 
@@ -153,6 +161,18 @@ mod win_tracker {
         state.last_title = title;
         state.last_app = app_name;
         state.start_time = now;
+    }
+
+    /// POST an activity log to the dashboard.
+    fn post_activity_log(log: ActivityLog) {
+        let client = match CLIENT.get() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        tauri::async_runtime::spawn(async move {
+            let url = "https://cus-spy-admin-dashboard.vercel.app/api/activity-log";
+            let _ = client.post(url).json(&log).send().await;
+        });
     }
 
     /// Spawn a dedicated OS thread, install the hook, then run the message pump.
@@ -190,6 +210,15 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn set_active_user(user_id: String) {
+    if let Some(state_arc) = TRACKING_STATE.get() {
+        let mut state = state_arc.lock().unwrap();
+        state.user_id = user_id.clone();
+        println!("Rust State Updated: Tracking User ID {}", user_id);
+    }
+}
+
 // ─── App entry point ──────────────────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -225,10 +254,11 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, set_active_user])
         .setup(|app| {
-            // Store AppHandle globally for the static hook callback
+            // Store AppHandle and Client globally
             APP_HANDLE.set(app.handle().clone()).ok();
+            CLIENT.set(Client::new()).ok();
 
             // Silent auto-updater
             let handle = app.handle().clone();
@@ -283,16 +313,32 @@ pub fn run() {
                         productive_acc += 1;
                     }
 
-                    // Emit heartbeat payload every 60 s
+                    // Report heartbeat directly from background every 1 min
                     if last_heartbeat.elapsed().as_secs() >= 60 {
+                        // Get latest user_id from state
+                        let current_user_id = if let Some(s) = TRACKING_STATE.get() {
+                            s.lock().unwrap().user_id.clone()
+                        } else {
+                            hb_user_id.clone()
+                        };
+
                         let payload = serde_json::json!({
-                            "userId": hb_user_id,
-                            "sessionId": session_id,
+                            "userId": current_user_id,
+                            "sessionId": &session_id,
                             "productiveSeconds": productive_acc,
                             "unproductiveSeconds": unproductive_acc,
                             "timestamp": Utc::now().to_rfc3339()
                         });
-                        let _ = heartbeat_handle.emit("send-heartbeat", payload);
+
+                        // 1. Notify UI
+                        let _ = heartbeat_handle.emit("send-heartbeat", payload.clone());
+
+                        // 2. Report to DB
+                        let client = CLIENT.get().unwrap().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let url = "https://cus-spy-admin-dashboard.vercel.app/api/track/heartbeat";
+                            let _ = client.post(url).json(&payload).send().await;
+                        });
 
                         productive_acc   = 0;
                         unproductive_acc = 0;
@@ -324,16 +370,26 @@ pub fn run() {
                     let secs =
                         Utc::now().signed_duration_since(s.start_time).num_seconds();
                     if secs > 0 {
-                        let _ = handle.emit(
-                            "new-activity-log",
-                            ActivityLog {
-                                user_id: s.user_id.clone(),
-                                title: s.last_title.clone(),
-                                app_name: s.last_app.clone(),
-                                start_time: s.start_time.to_rfc3339(),
-                                duration_seconds: secs as u64,
-                            },
-                        );
+                        let log = ActivityLog {
+                            user_id: s.user_id.clone(),
+                            title: s.last_title.clone(),
+                            app_name: s.last_app.clone(),
+                            start_time: s.start_time.to_rfc3339(),
+                            duration_seconds: secs as u64,
+                        };
+
+                        // UI emit
+                        let _ = handle.emit("new-activity-log", log.clone());
+
+                        // Critical flush to DB (might be slightly jittery on exit,
+                        // but reqwest will try to fire it off)
+                        if let Some(client) = CLIENT.get() {
+                            let client = client.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let url = "https://cus-spy-admin-dashboard.vercel.app/api/activity-log";
+                                let _ = client.post(url).json(&log).send().await;
+                            });
+                        }
                     }
                 }
             }
