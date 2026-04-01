@@ -4,6 +4,7 @@ version = "0.1.13"
 description = "Monitoring the Employees of CUS"
 authors = ["you"]
 edition = "2021"
+window_subsystem = "console"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -36,6 +37,7 @@ tokio = { version = "1.50.0", features = ["full"] }
 chrono = "0.4"
 device_query = "2.1.0"
 whoami = "1.5.0"
+tauri-plugin-log = "2.8.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [

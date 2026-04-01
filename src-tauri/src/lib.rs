@@ -6,6 +6,7 @@ use chrono::Utc;
 use std::sync::{Arc, Mutex, OnceLock};
 use device_query::{DeviceQuery, DeviceState};
 use reqwest::Client;
+use tauri_plugin_log::{Target, TargetKind};
 
 // ─── Shared HTTP Client ──────────────────────────────────────────────────────
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -222,8 +223,8 @@ fn set_active_user(user_id: String) {
 // ─── App entry point ──────────────────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Windows username becomes the user_id – no login required on the Rust side
-    let user_id = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".to_string());
+    // Use whoami for more reliable username detection in production/admin environments
+    let user_id = whoami::username();
 
     let tracking_state = Arc::new(Mutex::new(TrackingState {
         last_title: String::new(),
@@ -238,6 +239,13 @@ pub fn run() {
     let state_for_exit = tracking_state.clone();
 
     tauri::Builder::default()
+    plugin(tauri_plugin_log::Builder::new()
+            .targets([
+                Target::new(TargetKind::Stdout),
+                Target::new(TargetKind::LogDir), // This creates a log file on the PC
+                Target::new(TargetKind::Webview),
+            ])
+            .build())
         // Single-instance guard
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -256,9 +264,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![greet, set_active_user])
         .setup(|app| {
-            // Store AppHandle and Client globally
+            // Store AppHandle and Client globally (with User-Agent for WAF compatibility)
             APP_HANDLE.set(app.handle().clone()).ok();
-            CLIENT.set(Client::new()).ok();
+            CLIENT.set(Client::builder().user_agent("CUS-Monitor-App").build().unwrap()).ok();
 
             // Silent auto-updater
             let handle = app.handle().clone();
