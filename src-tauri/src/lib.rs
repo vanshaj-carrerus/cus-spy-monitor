@@ -239,10 +239,10 @@ pub fn run() {
     let state_for_exit = tracking_state.clone();
 
     tauri::Builder::default()
-    plugin(tauri_plugin_log::Builder::new()
+        .plugin(tauri_plugin_log::Builder::new()
             .targets([
                 Target::new(TargetKind::Stdout),
-                Target::new(TargetKind::LogDir), // This creates a log file on the PC
+                Target::new(TargetKind::LogDir { file_name: Some("cus-monitor.log".to_string()) }), // Corrected type to Option<String>
                 Target::new(TargetKind::Webview),
             ])
             .build())
