@@ -19,7 +19,10 @@ app.use(cors({
     origin: [
         "http://localhost:1420",   // Default Tauri dev port
         "tauri://localhost",       // Standard Tauri production protocol
-        "http://tauri.localhost"    // Windows/Linux production protocol
+        "http://tauri.localhost",   // Windows/Linux production protocol
+        "http://localhost:3000",   // Common alternate dev port
+        "http://localhost:3001",    // Self
+        "https://cus-spy-admin-dashboard.vercel.app"
     ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true
@@ -197,11 +200,15 @@ app.post('/api/track/screenshot', async (req, res) => {
 
 app.get('/api/track/capture-image', async (req, res) => {
     try {
-        console.log("Capturing image for frontend...");
+        console.log("OS Level Screenshot Capture Request Received...");
         const imgBuffer = await screenshot({ format: 'jpg' });
+        if (!imgBuffer || imgBuffer.length === 0) throw new Error("Screenshot capture returned an empty buffer");
+
         const base64Image = imgBuffer.toString('base64');
+        console.log("Screenshot captured successfully, sending base64 data.");
         res.json({ success: true, image: `data:image/jpeg;base64,${base64Image}` });
     } catch (err) {
+        console.error("OS Level Screenshot Error:", err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });

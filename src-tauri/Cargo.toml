@@ -1,10 +1,9 @@
 [package]
 name = "cus-monitor"
-version = "0.1.15"
+version = "0.1.16"
 description = "Monitoring the Employees of CUS"
 authors = ["you"]
 edition = "2021"
-window_subsystem = "console"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

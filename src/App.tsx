@@ -61,7 +61,6 @@ function App() {
     const unlistenHeartbeat = listen('send-heartbeat', async (event: any) => {
       console.log("Rust heartbeat received:", event.payload);
       setElapsedTime(prev => prev + 60);
-      takeScreenshotLogic();
     });
 
     const unlistenActivity = listen('new-activity-log', (event: any) => {
@@ -82,37 +81,6 @@ function App() {
       window.removeEventListener('keydown', handleKeydown);
     };
   }, [isLoggedIn, machineId, user]);
-
-  const SIDECAR_URL = "https://tauri.localhost";
-
-  const takeScreenshotLogic = async () => {
-    if (!user || !sessionId) return;
-    const uid = user._id || user.id || user.username;
-    try {
-      // 1. Get image from local sidecar
-      const captureResponse = await fetch(`${SIDECAR_URL}/api/track/capture-image`);
-      const captureData = await captureResponse.json();
-
-      if (!captureData.success || !captureData.image) {
-        throw new Error("Failed to capture image from sidecar");
-      }
-
-      // 2. Upload to Vercel dashboard
-      await fetch('https://cus-spy-admin-dashboard.vercel.app/api/track/upload-screenshot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: uid,
-          sessionId,
-          image: captureData.image, // The base64 data
-          timestamp: new Date().toISOString()
-        })
-      });
-      console.log("Screenshot captured and uploaded successfully");
-    } catch (err) {
-      console.error("Manual screenshot failed:", err);
-    }
-  };
 
   const syncUserWithRust = async (userData: User) => {
     const uid = userData._id || userData.id;

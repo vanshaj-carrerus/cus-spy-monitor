@@ -12,6 +12,16 @@
     "shell:default",
     "http:default",
     {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/monitor-worker",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    {
       "identifier": "http:allow-fetch",
       "allow": [
         {

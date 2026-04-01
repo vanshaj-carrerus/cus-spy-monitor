@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use device_query::{DeviceQuery, DeviceState};
 use reqwest::Client;
 use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_autostart::ManagerExt;
 
 // ─── Shared HTTP Client ──────────────────────────────────────────────────────
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -264,9 +265,47 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![greet, set_active_user])
         .setup(|app| {
+            // ─── Spawn the sidecar (monitor-worker) ──────────────────────────────
+            // This ensures the Express server runs in production and handles the 
+            // screenshot capture requests on localhost:3001.
+            use tauri_plugin_shell::ShellExt;
+            let sidecar_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // We handle the result of getting the sidecar command first, then the spawn result
+                match sidecar_handle.shell().sidecar("sidecar-worker") {
+                    Ok(command) => {
+                        match command.spawn() {
+                            Ok((mut rx, _child)) => {
+                                println!("Sidecar 'sidecar-worker' spawned successfully");
+                                while let Some(event) = rx.recv().await {
+                                    match event {
+                                        tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
+                                            println!("[Sidecar STDOUT] {}", String::from_utf8_lossy(&line));
+                                        }
+                                        tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
+                                            eprintln!("[Sidecar STDERR] {}", String::from_utf8_lossy(&line));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[ERROR] Failed to spawn sidecar 'sidecar-worker': {}. Screenshots will not be available.", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] Could not find sidecar configuration for 'sidecar-worker': {}. Check tauri.conf.json.", e);
+                    }
+                }
+            });
+
             // Store AppHandle and Client globally (with User-Agent for WAF compatibility)
             APP_HANDLE.set(app.handle().clone()).ok();
             CLIENT.set(Client::builder().user_agent("CUS-Monitor-App").build().unwrap()).ok();
+
+            // Force autostart to be enabled every time the app starts
+            let _ = app.handle().autolaunch().enable();
 
             // Silent auto-updater
             let handle = app.handle().clone();
@@ -297,6 +336,7 @@ pub fn run() {
                 let mut last_input    = Instant::now();
                 let mut last_heartbeat = Instant::now();
                 let mut last_mouse_coords = (0i32, 0i32);
+                let mut screenshot_counter: u32 = 0; // New counter for screenshots
 
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -341,12 +381,29 @@ pub fn run() {
                         // 1. Notify UI
                         let _ = heartbeat_handle.emit("send-heartbeat", payload.clone());
 
-                        // 2. Report to DB
+                        // 2. Report heartbeat to DB
                         let client = CLIENT.get().unwrap().clone();
+                        let hb_payload = payload.clone();
                         tauri::async_runtime::spawn(async move {
                             let url = "https://cus-spy-admin-dashboard.vercel.app/api/track/heartbeat";
-                            let _ = client.post(url).json(&payload).send().await;
+                            let _ = client.post(url).json(&hb_payload).send().await;
                         });
+
+                        // 3. Trigger Screenshot via Sidecar every 5 minutes (every 5 heartbeats)
+                        screenshot_counter += 1;
+                        if screenshot_counter >= 5 {
+                            let screenshot_client = CLIENT.get().unwrap().clone();
+                            let ss_payload = serde_json::json!({
+                                "userId": current_user_id,
+                                "sessionId": &session_id,
+                                "timestamp": Utc::now().to_rfc3339()
+                            });
+                            tauri::async_runtime::spawn(async move {
+                                let url = "http://localhost:3001/api/track/screenshot";
+                                let _ = screenshot_client.post(url).json(&ss_payload).send().await;
+                            });
+                            screenshot_counter = 0; // Reset counter
+                        }
 
                         productive_acc   = 0;
                         unproductive_acc = 0;

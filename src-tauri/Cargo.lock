@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "cus-monitor"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "chrono",
  "device_query",
