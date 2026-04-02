@@ -15,7 +15,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "binaries/monitor-worker",
+          "name": "binaries/sidecar-worker",
           "sidecar": true,
           "args": true
         }

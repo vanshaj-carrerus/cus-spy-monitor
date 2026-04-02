@@ -218,6 +218,32 @@ fn set_active_user(user_id: String) {
         let mut state = state_arc.lock().unwrap();
         state.user_id = user_id.clone();
         println!("Rust State Updated: Tracking User ID {}", user_id);
+
+        // Notify sidecar about the new active user so it can start tracking & take initial screenshot
+        if let Some(client) = CLIENT.get() {
+            let client = client.clone();
+            let uid = user_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let url = "http://localhost:3001/api/track/start";
+                // Retry up to 5 times with a 2-second delay if the sidecar is still booting
+                for i in 1..=5 {
+                    println!("Syncing User ID to Sidecar (Attempt {})...", i);
+                    match client.post(url).json(&serde_json::json!({ "userId": &uid })).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            println!("Sidecar initialized successfully.");
+                            break;
+                        }
+                        Ok(resp) => {
+                            eprintln!("Sidecar rejected initialization: {}. Retrying...", resp.status());
+                        }
+                        Err(e) => {
+                            eprintln!("Sidecar connection failed: {}. Is it still booting?", e);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            });
+        }
     }
 }
 
@@ -272,11 +298,11 @@ pub fn run() {
             let sidecar_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // We handle the result of getting the sidecar command first, then the spawn result
-                match sidecar_handle.shell().sidecar("sidecar-worker") {
+                match sidecar_handle.shell().sidecar("binaries/sidecar-worker") {
                     Ok(command) => {
                         match command.spawn() {
                             Ok((mut rx, _child)) => {
-                                println!("Sidecar 'sidecar-worker' spawned successfully");
+                                println!("Sidecar 'binaries/sidecar-worker' spawned successfully");
                                 while let Some(event) = rx.recv().await {
                                     match event {
                                         tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
@@ -290,13 +316,11 @@ pub fn run() {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("[ERROR] Failed to spawn sidecar 'sidecar-worker': {}. Screenshots will not be available.", e);
+                                eprintln!("[ERROR] Failed to spawn sidecar: {}. Ensure binaries/sidecar-worker exists and is valid.", e);
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("[ERROR] Could not find sidecar configuration for 'sidecar-worker': {}. Check tauri.conf.json.", e);
-                    }
+                    Err(e) => eprintln!("Sidecar Configuration Error: {}", e),
                 }
             });
 
@@ -391,7 +415,8 @@ pub fn run() {
 
                         // 3. Trigger Screenshot via Sidecar every 5 minutes (every 5 heartbeats)
                         screenshot_counter += 1;
-                        if screenshot_counter >= 5 {
+                        // let the screenshot timerr 2 minutes for now to test
+                        if screenshot_counter >= 2 {
                             let screenshot_client = CLIENT.get().unwrap().clone();
                             let ss_payload = serde_json::json!({
                                 "userId": current_user_id,

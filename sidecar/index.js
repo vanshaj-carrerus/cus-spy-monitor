@@ -1,15 +1,15 @@
 // sidecar/index.js
 
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import { mouse, Button, Point } from "@nut-tree-fork/nut-js";
-import screenshot from "screenshot-desktop";
-import crypto from "crypto";
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const { mouse, Button, Point } = require("@nut-tree-fork/nut-js");
+const screenshot = require("screenshot-desktop");
+const crypto = require("crypto");
 
 dotenv.config();
 
-export const DASHBOARD_API_URL = "https://cus-spy-admin-dashboard.vercel.app";
+const DASHBOARD_API_URL = "https://cus-spy-admin-dashboard.vercel.app";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -95,7 +95,10 @@ const captureAndUploadScreenshot = async () => {
 
         const response = await fetch(`${DASHBOARD_API_URL}/api/track/upload-screenshot`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'CUS-Monitor-Sidecar'
+            },
             body: JSON.stringify({
                 userId: activeUserId,
                 sessionId,
@@ -104,10 +107,11 @@ const captureAndUploadScreenshot = async () => {
             })
         });
 
+        const result = await response.json();
         if (response.ok) {
-            console.log("Screenshot uploaded successfully");
+            console.log("Screenshot uploaded successfully:", result);
         } else {
-            console.error("Screenshot upload failed:", response.status);
+            console.error("Vercel rejected screenshot:", response.status, result);
         }
     } catch (err) {
         console.error("Screenshot capture/upload failed:", err.message);
@@ -168,35 +172,51 @@ app.post('/api/track/heartbeat', async (req, res) => {
     }
 });
 
+
 app.post('/api/track/screenshot', async (req, res) => {
     const { userId, sessionId: reqSessionId, timestamp } = req.body;
+
+    // Ensure activeUserId is set even if start wasn't called
     if (userId) {
         activeUserId = userId;
-        const sid = reqSessionId || sessionId;
+    }
 
+    if (activeUserId) {
+        const sid = reqSessionId || sessionId;
         try {
-            console.log(`Manual screenshot for user: ${userId}`);
+            console.log(`Manual screenshot triggered for: ${activeUserId}`);
             const imgBuffer = await screenshot({ format: 'jpg' });
             const base64Image = imgBuffer.toString('base64');
 
             const response = await fetch(`${DASHBOARD_API_URL}/api/track/upload-screenshot`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'CUS-Monitor-Sidecar'
+                },
                 body: JSON.stringify({
-                    userId,
+                    userId: activeUserId,
                     sessionId: sid,
                     image: `data:image/jpeg;base64,${base64Image}`,
                     timestamp: timestamp || new Date().toISOString()
                 })
             });
-            res.json({ success: response.ok });
+            const result = await response.json();
+            if (response.ok) {
+                console.log("Manual screenshot upload success:", result);
+            } else {
+                console.error("Manual screenshot rejected by Vercel:", response.status, result);
+            }
+            res.json({ success: response.ok, result });
         } catch (err) {
+            console.error("Capture Error:", err.message);
             res.status(500).json({ success: false, error: err.message });
         }
     } else {
-        res.status(400).json({ success: false, message: "userId required" });
+        res.status(400).json({ success: false, message: "No activeUserId found" });
     }
 });
+
 
 app.get('/api/track/capture-image', async (req, res) => {
     try {
@@ -276,6 +296,8 @@ process.stdin.on('data', async (data) => {
 
 app.listen(PORT, () => {
     console.log(`Sidecar API running on http://localhost:${PORT}`);
+}).on('error', (err) => {
+    console.error("SIDECAR PORT ERROR:", err.message);
 });
 
 console.log("Sidecar Active");
