@@ -297,30 +297,39 @@ pub fn run() {
             use tauri_plugin_shell::ShellExt;
             let sidecar_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                // We handle the result of getting the sidecar command first, then the spawn result
-                match sidecar_handle.shell().sidecar("binaries/sidecar-worker") {
-                    Ok(command) => {
-                        match command.spawn() {
-                            Ok((mut rx, _child)) => {
-                                println!("Sidecar 'binaries/sidecar-worker' spawned successfully");
-                                while let Some(event) = rx.recv().await {
-                                    match event {
-                                        tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                                            println!("[Sidecar STDOUT] {}", String::from_utf8_lossy(&line));
+                // Auto-restart loop: if sidecar exits for any reason, bring it back.
+                loop {
+                    match sidecar_handle.shell().sidecar("sidecar-worker") {
+                        Ok(command) => {
+                            match command.spawn() {
+                                Ok((mut rx, _child)) => {
+                                    println!("[Sidecar] Process started successfully. Listening...");
+                                    // Drain events so the process is kept alive.
+                                    // rx.recv() returns None only when the process exits.
+                                    while let Some(event) = rx.recv().await {
+                                        match event {
+                                            tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
+                                                println!("[Sidecar STDOUT] {}", String::from_utf8_lossy(&line));
+                                            }
+                                            tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
+                                                eprintln!("[Sidecar STDERR] {}", String::from_utf8_lossy(&line));
+                                            }
+                                            _ => {}
                                         }
-                                        tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                                            eprintln!("[Sidecar STDERR] {}", String::from_utf8_lossy(&line));
-                                        }
-                                        _ => {}
                                     }
+                                    // Reaching here means the sidecar process exited.
+                                    eprintln!("[Sidecar] Process exited unexpectedly. Restarting in 2s...");
+                                }
+                                Err(e) => {
+                                    eprintln!("[Sidecar] Failed to spawn: {}. Retrying in 2s...", e);
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("[ERROR] Failed to spawn sidecar: {}. Ensure binaries/sidecar-worker exists and is valid.", e);
-                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[Sidecar] Configuration error: {}. Retrying in 2s...", e);
                         }
                     }
-                    Err(e) => eprintln!("Sidecar Configuration Error: {}", e),
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             });
 
@@ -413,10 +422,9 @@ pub fn run() {
                             let _ = client.post(url).json(&hb_payload).send().await;
                         });
 
-                        // 3. Trigger Screenshot via Sidecar every 5 minutes (every 5 heartbeats)
+                        // 3. Trigger Screenshot via Sidecar every 15 minutes (every 15 × 60s heartbeats)
                         screenshot_counter += 1;
-                        // let the screenshot timerr 2 minutes for now to test
-                        if screenshot_counter >= 2 {
+                        if screenshot_counter >= 15 {
                             let screenshot_client = CLIENT.get().unwrap().clone();
                             let ss_payload = serde_json::json!({
                                 "userId": current_user_id,
@@ -425,7 +433,10 @@ pub fn run() {
                             });
                             tauri::async_runtime::spawn(async move {
                                 let url = "http://localhost:3001/api/track/screenshot";
-                                let _ = screenshot_client.post(url).json(&ss_payload).send().await;
+                                match screenshot_client.post(url).json(&ss_payload).send().await {
+                                    Ok(resp) => println!("[Screenshot] Trigger sent → sidecar responded: {}", resp.status()),
+                                    Err(e) => eprintln!("[Screenshot] Trigger to sidecar failed: {}", e),
+                                }
                             });
                             screenshot_counter = 0; // Reset counter
                         }
