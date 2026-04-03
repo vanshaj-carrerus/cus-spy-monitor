@@ -86,9 +86,12 @@ function App() {
     const uid = userData._id || userData.id;
     if (uid) {
       try {
-        // This sends the MongoDB _id string directly to your Rust TrackingState
-        await invoke("set_active_user", { userId: uid });
-        console.log("User synced with Rust backend");
+        // Send both the MongoDB _id and the human-readable username to Rust
+        await invoke("set_active_user", {
+          userId: uid,
+          username: userData.username || null,
+        });
+        console.log("User synced with Rust backend (id + username)");
       } catch (err) {
         console.error("Failed to sync user with Rust:", err);
       }

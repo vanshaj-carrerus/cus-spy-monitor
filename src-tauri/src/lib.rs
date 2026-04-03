@@ -1,7 +1,7 @@
 use tauri::{Manager, Emitter, RunEvent};
 use std::time::{Duration, Instant};
 use tauri_plugin_updater::UpdaterExt;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use chrono::Utc;
 use std::sync::{Arc, Mutex, OnceLock};
 use device_query::{DeviceQuery, DeviceState};
@@ -12,11 +12,17 @@ use screenshots::Screen;
 use base64::{engine::general_purpose, Engine as _};
 use image::{codecs::jpeg::JpegEncoder, ColorType};
 
+// LiveKit imports
+use livekit::prelude::*;
+use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
+
 // ─── Shared HTTP Client ──────────────────────────────────────────────────────
 static CLIENT: OnceLock<Client> = OnceLock::new();
 
 // ─── Payload sent to the frontend and backend ────────────────────────────────
-#[derive(Serialize, Clone, Debug, serde::Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct ActivityLog {
     #[serde(rename = "userId")]
     user_id: String,
@@ -32,6 +38,7 @@ struct TrackingState {
     last_app: String,
     start_time: chrono::DateTime<Utc>,
     user_id: String,
+    username: String,  // The human-readable username (used by dashboard for stream)
 }
 
 // Static globals – the only way to reach them from a raw C callback
@@ -249,11 +256,16 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-fn set_active_user(user_id: String) {
+fn set_active_user(user_id: String, username: Option<String>) {
     if let Some(state_arc) = TRACKING_STATE.get() {
         let mut state = state_arc.lock().unwrap();
         state.user_id = user_id.clone();
-        println!("Rust State Updated: Tracking User ID {}", user_id);
+        if let Some(uname) = username {
+            state.username = uname.clone();
+            println!("Rust State Updated: User ID={}, Username={}", user_id, uname);
+        } else {
+            println!("Rust State Updated: User ID={}", user_id);
+        }
     }
 }
 
@@ -267,7 +279,8 @@ pub fn run() {
         last_title: String::new(),
         last_app: String::new(),
         start_time: Utc::now(),
-        user_id,
+        user_id: user_id.clone(),
+        username: user_id, // Default to OS username; overridden by set_active_user after login
     }));
 
     // Store in global so the static hook callback can reach it
@@ -392,9 +405,9 @@ pub fn run() {
                             let _ = client.post(url).json(&hb_payload).send().await;
                         });
 
-                        // 3. Trigger Screenshot natively every 5 minutes (every 5 × 60s heartbeats)
+                        // 3. Trigger Screenshot natively every 15 minutes (every 15 × 60s heartbeats)
                         screenshot_counter += 1;
-                        if screenshot_counter >= 2 {
+                        if screenshot_counter >= 15 {
                             let screenshot_client = CLIENT.get().unwrap().clone();
                             let capture_user_id = current_user_id.clone();
                             let capture_session_id = session_id.clone();
@@ -467,69 +480,138 @@ pub fn run() {
                 }
             });
 
-            // ─── Live Stream Request Loop ──────────────────────────────────────────
+            // ─── Live Stream Room Logic (LiveKit) ──────────────────────────────
             tauri::async_runtime::spawn(async move {
-                let mut is_streaming = false;
-                let mut last_status_check = std::time::Instant::now();
-                
+                let mut current_room: Option<Room> = Option::None;
+                let mut video_source: Option<NativeVideoSource> = Option::None;
+                let mut is_active = false;
+
+                println!("[LiveKit] Stream controller started — idle polling every 30 s");
+
                 loop {
-                    // Small sleep depending on mode (1000ms if streaming, 3000ms if idle waiting)
-                    tokio::time::sleep(Duration::from_millis(if is_streaming { 500 } else { 3000 })).await;
-                    
-                    let current_user_id = if let Some(s) = TRACKING_STATE.get() {
-                        s.lock().unwrap().user_id.clone()
+                    // Timing: 30s poll when idle, 100ms when publishing (high FPS)
+                    let sleep_ms = if is_active { 100 } else { 30_000 };
+                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+
+                    // 1. Resolve identifiers
+                    let (uid, uname) = if let Some(s) = TRACKING_STATE.get() {
+                        let state = s.lock().unwrap();
+                        (state.user_id.clone(), state.username.clone())
                     } else {
-                        whoami::username()
+                        let u = whoami::username();
+                        (u.clone(), u)
                     };
 
-                    // Guard: Wait until CLIENT is set to proceed
                     let stream_client = match CLIENT.get() {
                         Some(c) => c.clone(),
                         None => continue,
                     };
 
-                    // Check status every 3 seconds to see if admin started/stopped the stream
-                    if !is_streaming || last_status_check.elapsed().as_secs() >= 3 {
-                        let url = format!("https://cus-monitor-dashboard.vercel.app/api/stream?action=status&userId={}", current_user_id);
-                        if let Ok(res) = stream_client.get(&url).send().await {
-                            if let Ok(json) = res.json::<serde_json::Value>().await {
-                                if let Some(active) = json.get("isActive").and_then(|v| v.as_bool()) {
-                                    is_streaming = active;
+                    // 2. Check if admin requested stream
+                    let status_url = format!(
+                        "https://cus-monitor-dashboard.vercel.app/api/stream?action=status&userId={}",
+                        uname
+                    );
+                    
+                    let mut requested = false;
+                    if let Ok(res) = stream_client.get(&status_url).send().await {
+                        if let Ok(json) = res.json::<serde_json::Value>().await {
+                            requested = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false);
+                        }
+                    }
+
+                    // 3. Handle connection state changes
+                    if requested && !is_active {
+                        // START STEAMING
+                        println!("[LiveKit] 🚀 Request received. Fetching token...");
+                        let token_url = format!(
+                            "https://cus-monitor-dashboard.vercel.app/api/stream/token?room=room_{}&identity={}",
+                            uname, uname
+                        );
+
+                        if let Ok(res) = stream_client.get(&token_url).send().await {
+                            if let Ok(data) = res.json::<serde_json::Value>().await {
+                                let token = data["token"].as_str().unwrap_or_default();
+                                let url = data["url"].as_str().unwrap_or_default();
+
+                                if !token.is_empty() && !url.is_empty() {
+                                    match Room::connect(url, token, RoomOptions::default()).await {
+                                        Ok((room, mut events)) => {
+                                            println!("[LiveKit] ✅ Connected to room: room_{}", uname);
+                                            
+                                            // Create video source and track
+                                            let native_source = NativeVideoSource::new(VideoResolution { width: 1280, height: 720 }, true);
+                                            let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(native_source.clone()));
+                                            
+                                            // Publish track
+                                            match room.local_participant().publish_track(
+                                                LocalTrack::Video(track),
+                                                Default::default()
+                                            ).await {
+                                                Ok(_) => {
+                                                    println!("[LiveKit] 📡 Video track published!");
+                                                    current_room = Some(room);
+                                                    video_source = Some(native_source);
+                                                    is_active = true;
+                                                }
+                                                Err(e) => eprintln!("[LiveKit] ❌ Failed to publish track: {:?}", e),
+                                            }
+                                        }
+                                        Err(e) => eprintln!("[LiveKit] ❌ Room connect error: {:?}", e),
+                                    }
                                 }
                             }
                         }
-                        last_status_check = std::time::Instant::now();
+                    } else if !requested && is_active {
+                        // STOP STREAMING
+                        println!("[LiveKit] ⏹ Admin requested stop. Disconnecting...");
+                        if let Some(room) = current_room.take() {
+                            let _ = room.close().await;
+                        }
+                        video_source = None;
+                        is_active = false;
                     }
 
-                    // If active, blast a frame off to the server
-                    if is_streaming {
-                        if let Ok(screens) = Screen::all() {
-                            if let Some(screen) = screens.first() {
-                                if let Ok(image) = screen.capture() {
-                                    let width = image.width();
-                                    let height = image.height();
-                                    let rgba_buffer = image.into_raw();
-                                    
-                                    let mut rgb_buffer = Vec::with_capacity((width * height * 3) as usize);
-                                    for chunk in rgba_buffer.chunks_exact(4) {
-                                        rgb_buffer.push(chunk[0]);
-                                        rgb_buffer.push(chunk[1]);
-                                        rgb_buffer.push(chunk[2]);
-                                    }
-                                    
-                                    let mut jpeg_buffer = Vec::new();
-                                    // Use heavily compressed JPEG for fast network streaming
-                                    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buffer, 30);
-                                    
-                                    if let Ok(_) = encoder.encode(&rgb_buffer, width, height, ColorType::Rgb8.into()) {
-                                        let base64_image = general_purpose::STANDARD.encode(&jpeg_buffer);
-                                        let payload = serde_json::json!({
-                                            "userId": current_user_id,
-                                            "frame": format!("data:image/jpeg;base64,{}", base64_image)
-                                        });
-                                        let upload_url = "https://cus-monitor-dashboard.vercel.app/api/stream?action=upload";
-                                        // Fire and forget upload (minimize lag)
-                                        let _ = stream_client.post(upload_url).json(&payload).send().await;
+                    // 4. Capture and Push Frame (if active)
+                    if is_active {
+                        if let (Some(source), Some(room)) = (&video_source, &current_room) {
+                            if let Ok(screens) = Screen::all() {
+                                if let Some(screen) = screens.first() {
+                                    if let Ok(img) = screen.capture() {
+                                        let w = img.width();
+                                        let h = img.height();
+                                        let rgba = img.into_raw();
+
+                                        // Convert RGBA to I420
+                                        let mut i420 = I420Buffer::new(w, h);
+                                        let (stride_y, stride_u, stride_v) = i420.strides();
+                                        let (data_y, data_u, data_v) = i420.data_mut();
+
+                                        for y in 0..h as usize {
+                                            for x in 0..w as usize {
+                                                let i = (y * w as usize + x) * 4;
+                                                let r = rgba[i] as f32;
+                                                let g = rgba[i+1] as f32;
+                                                let b = rgba[i+2] as f32;
+
+                                                data_y[y * stride_y as usize + x] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+
+                                                if y % 2 == 0 && x % 2 == 0 {
+                                                    let u = -0.169 * r - 0.331 * g + 0.5 * b + 128.0;
+                                                    let v = 0.5 * r - 0.419 * g - 0.081 * b + 128.0;
+                                                    data_u[(y/2) * stride_u as usize + (x/2)] = u as u8;
+                                                    data_v[(y/2) * stride_v as usize + (x/2)] = v as u8;
+                                                }
+                                            }
+                                        }
+
+                                        let frame = VideoFrame {
+                                            timestamp_us: Instant::now().elapsed().as_micros() as i64,
+                                            rotation: VideoRotation::VideoRotation0,
+                                            buffer: i420,
+                                        };
+
+                                        source.capture_frame(&frame);
                                     }
                                 }
                             }
@@ -537,6 +619,7 @@ pub fn run() {
                     }
                 }
             });
+
 
             // Start the Windows event hook on its own message-pump thread
             #[cfg(target_os = "windows")]

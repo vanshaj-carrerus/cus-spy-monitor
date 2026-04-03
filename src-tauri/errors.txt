@@ -1,0 +1,228 @@
+﻿cargo :     Checking 
+cus-monitor v0.1.22 (D:\co
+de\cus-spy-monitor\cus-spy
+-monitor\src-tauri)
+At line:1 char:1
++ cargo check 2>&1 | 
+Out-File -FilePath 
+"errors.txt" -Encoding 
+utf8; Ge ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (   
+     Checking cu...itor   
+ \src-tauri):String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+error[E0432]: unresolved 
+imports `livekit::webrtc::
+video_source::native::Vide
+oSourceOptions`, `livekit:
+:webrtc::video_source::nat
+ive::VideoSourceType`
+  --> src\lib.rs:18:64
+   |
+18 | use livekit::webrtc::
+video_source::native::{Nat
+iveVideoSource, 
+VideoSourceOptions, 
+VideoSourceType};
+   |                      
+                          
+                
+^^^^^^^^^^^^^^^^^^  
+^^^^^^^^^^^^^^^ no 
+`VideoSourceType` in 
+`video_source::native`
+   |                      
+                          
+                |
+   |                      
+                          
+                no 
+`VideoSourceOptions` in 
+`video_source::native`
+
+error[E0432]: unresolved 
+import `livekit::webrtc::v
+ideo_source::VideoSource`
+  --> src\lib.rs:19:5
+   |
+19 | use livekit::webrtc::
+video_source::VideoSource;
+   |     ^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^-----------
+   |     |                
+              |
+   |     |                
+              help: a 
+similar name exists in 
+the module: 
+`RtcVideoSource`
+   |     no `VideoSource` 
+in `video_source`
+
+error[E0422]: cannot find 
+struct, variant or union 
+type 
+`VideoPublishOptions` in 
+this scope
+   --> src\lib.rs:552:49
+    |
+552 | ...                 
+  VideoPublishOptions {
+    |                     
+  ^^^^^^^^^^^^^^^^^^^ not 
+found in this scope
+
+error[E0061]: this 
+function takes 2 
+arguments but 1 argument 
+was supplied
+   --> src\lib.rs:543:65
+    |
+543 |   ...               
+    let native_source = Na
+tiveVideoSource::new(Video
+SourceOptions {
+    |  ___________________
+________________________^^
+^^^^^^^^^^^^^^^^^^^^-
+544 | | ...               
+        type_: 
+VideoSourceType::Screen,
+545 | | ...               
+        
+..Default::default()
+546 | | ...               
+    });
+    | |___________________
+_____- argument #2 of 
+type `bool` is missing
+    |
+note: associated function 
+defined here
+   --> C:\Users\shree01\.c
+argo\registry\src\index.cr
+ates.io-1949cf8c6b5b557f\l
+ibwebrtc-0.3.29\src\video_
+source.rs:73:16
+    |
+ 73 |         pub fn 
+new(resolution: 
+VideoResolution, 
+is_screencast: bool) -> 
+Self {
+    |                ^^^
+help: provide the argument
+    |
+543 |                     
+                        
+let native_source = Native
+VideoSource::new(VideoSour
+ceOptions {
+544 |                     
+                          
+  type_: 
+VideoSourceType::Screen,
+545 |                     
+                          
+  ..Default::default()
+546 ~                     
+                        
+}, /* bool */);
+    |
+
+error[E0599]: no variant 
+or associated item named 
+`ScreenShare` found for 
+enum `livekit::prelude::Tr
+ackSource` in the current 
+scope
+   --> src\lib.rs:553:74
+    |
+553 | ...                 
+  source: 
+TrackSource::ScreenShare,
+    |                     
+                       
+^^^^^^^^^^^ variant or 
+associated item not found 
+in `livekit::prelude::Trac
+kSource`
+    |
+help: there is a variant 
+with a similar name 
+(notice the 
+capitalization)
+    |
+553 -                     
+                          
+      source: 
+TrackSource::ScreenShare,
+553 +                     
+                          
+      source: 
+TrackSource::Screenshare,
+    |
+
+error[E0308]: mismatched 
+types
+   --> src\lib.rs:620:62
+    |
+620 | ...                 
+  source.capture_frame(fra
+me);
+    |                     
+         ------------- 
+^^^^^ expected 
+`&VideoFrame<_>`, found 
+`VideoFrame<I420Buffer>`
+    |                     
+         |
+    |                     
+         arguments to 
+this method are incorrect
+    |
+    = note: expected 
+reference `&VideoFrame<_>`
+                  found 
+struct 
+`VideoFrame<I420Buffer>`
+note: method defined here
+   --> C:\Users\shree01\.c
+argo\registry\src\index.cr
+ates.io-1949cf8c6b5b557f\l
+ibwebrtc-0.3.29\src\video_
+source.rs:77:16
+    |
+ 77 |         pub fn 
+capture_frame<T: 
+AsRef<dyn 
+VideoBuffer>>(&self, 
+frame: &VideoFrame<T>) {
+    |                
+^^^^^^^^^^^^^
+help: consider borrowing 
+here
+    |
+620 |                     
+                    source
+.capture_frame(&frame);
+    |                     
+                          
+               +
+
+Some errors have detailed 
+explanations: E0061, 
+E0308, E0422, E0432, 
+E0599.
+For more information 
+about an error, try 
+`rustc --explain E0061`.
+error: could not compile 
+`cus-monitor` (lib) due 
+to 6 previous errors
