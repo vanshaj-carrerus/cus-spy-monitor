@@ -53,6 +53,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Optimization: Tells Rust to use more cores for the heavy lifting
           CARGO_BUILD_JOBS: 4 
+          RUSTFLAGS: "-C target-feature=+crt-static"
         with:
           tagName: v__VERSION__
           releaseName: 'CUS v__VERSION__'
