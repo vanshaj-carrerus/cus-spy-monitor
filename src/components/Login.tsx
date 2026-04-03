@@ -20,7 +20,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         setLoading(true);
 
         try {
-            const response = await fetch('https://cus-spy-admin-dashboard.vercel.app/api/auth/login', {
+            const response = await fetch('https://cus-monitor-dashboard.vercel.app/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password, email, role })
@@ -39,7 +39,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             }
         } catch (err) {
             console.error("Auth error:", err);
-            alert("Could not connect to the security sidecar.");
+            alert("Could not connect to the security server.");
         } finally {
             setLoading(false);
         }

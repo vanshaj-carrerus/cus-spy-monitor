@@ -26,9 +26,6 @@
     }
   },
   "bundle": {
-    "externalBin": [
-      "binaries/sidecar-worker"
-    ],
     "active": true,
     "targets": "all",
     "icon": [

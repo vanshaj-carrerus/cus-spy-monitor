@@ -8,6 +8,9 @@ use device_query::{DeviceQuery, DeviceState};
 use reqwest::Client;
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_autostart::ManagerExt;
+use screenshots::Screen;
+use base64::{engine::general_purpose, Engine as _};
+use image::{codecs::jpeg::JpegEncoder, ColorType};
 
 // ─── Shared HTTP Client ──────────────────────────────────────────────────────
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -172,7 +175,7 @@ mod win_tracker {
             None => return,
         };
         tauri::async_runtime::spawn(async move {
-            let url = "https://cus-spy-admin-dashboard.vercel.app/api/activity-log";
+            let url = "https://cus-monitor-dashboard.vercel.app/api/activity-log";
             let _ = client.post(url).json(&log).send().await;
         });
     }
@@ -218,32 +221,6 @@ fn set_active_user(user_id: String) {
         let mut state = state_arc.lock().unwrap();
         state.user_id = user_id.clone();
         println!("Rust State Updated: Tracking User ID {}", user_id);
-
-        // Notify sidecar about the new active user so it can start tracking & take initial screenshot
-        if let Some(client) = CLIENT.get() {
-            let client = client.clone();
-            let uid = user_id.clone();
-            tauri::async_runtime::spawn(async move {
-                let url = "http://localhost:3001/api/track/start";
-                // Retry up to 5 times with a 2-second delay if the sidecar is still booting
-                for i in 1..=5 {
-                    println!("Syncing User ID to Sidecar (Attempt {})...", i);
-                    match client.post(url).json(&serde_json::json!({ "userId": &uid })).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            println!("Sidecar initialized successfully.");
-                            break;
-                        }
-                        Ok(resp) => {
-                            eprintln!("Sidecar rejected initialization: {}. Retrying...", resp.status());
-                        }
-                        Err(e) => {
-                            eprintln!("Sidecar connection failed: {}. Is it still booting?", e);
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                }
-            });
-        }
     }
 }
 
@@ -291,47 +268,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![greet, set_active_user])
         .setup(|app| {
-            // ─── Spawn the sidecar (monitor-worker) ──────────────────────────────
-            // This ensures the Express server runs in production and handles the 
-            // screenshot capture requests on localhost:3001.
-            use tauri_plugin_shell::ShellExt;
-            let sidecar_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // Auto-restart loop: if sidecar exits for any reason, bring it back.
-                loop {
-                    match sidecar_handle.shell().sidecar("sidecar-worker") {
-                        Ok(command) => {
-                            match command.spawn() {
-                                Ok((mut rx, _child)) => {
-                                    println!("[Sidecar] Process started successfully. Listening...");
-                                    // Drain events so the process is kept alive.
-                                    // rx.recv() returns None only when the process exits.
-                                    while let Some(event) = rx.recv().await {
-                                        match event {
-                                            tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                                                println!("[Sidecar STDOUT] {}", String::from_utf8_lossy(&line));
-                                            }
-                                            tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                                                eprintln!("[Sidecar STDERR] {}", String::from_utf8_lossy(&line));
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    // Reaching here means the sidecar process exited.
-                                    eprintln!("[Sidecar] Process exited unexpectedly. Restarting in 2s...");
-                                }
-                                Err(e) => {
-                                    eprintln!("[Sidecar] Failed to spawn: {}. Retrying in 2s...", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[Sidecar] Configuration error: {}. Retrying in 2s...", e);
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                }
-            });
+            // Taskkill sidecar is removed as we no longer use it
 
             // Store AppHandle and Client globally (with User-Agent for WAF compatibility)
             APP_HANDLE.set(app.handle().clone()).ok();
@@ -418,24 +355,73 @@ pub fn run() {
                         let client = CLIENT.get().unwrap().clone();
                         let hb_payload = payload.clone();
                         tauri::async_runtime::spawn(async move {
-                            let url = "https://cus-spy-admin-dashboard.vercel.app/api/track/heartbeat";
+                            let url = "https://cus-monitor-dashboard.vercel.app/api/track/heartbeat";
                             let _ = client.post(url).json(&hb_payload).send().await;
                         });
 
-                        // 3. Trigger Screenshot via Sidecar every 15 minutes (every 15 × 60s heartbeats)
+                        // 3. Trigger Screenshot natively every 5 minutes (every 5 × 60s heartbeats)
                         screenshot_counter += 1;
-                        if screenshot_counter >= 15 {
+                        if screenshot_counter >= 2 {
                             let screenshot_client = CLIENT.get().unwrap().clone();
-                            let ss_payload = serde_json::json!({
-                                "userId": current_user_id,
-                                "sessionId": &session_id,
-                                "timestamp": Utc::now().to_rfc3339()
-                            });
+                            let capture_user_id = current_user_id.clone();
+                            let capture_session_id = session_id.clone();
                             tauri::async_runtime::spawn(async move {
-                                let url = "http://localhost:3001/api/track/screenshot";
-                                match screenshot_client.post(url).json(&ss_payload).send().await {
-                                    Ok(resp) => println!("[Screenshot] Trigger sent → sidecar responded: {}", resp.status()),
-                                    Err(e) => eprintln!("[Screenshot] Trigger to sidecar failed: {}", e),
+                                println!("[Screenshot] Attempting to capture screen for user {}...", capture_user_id);
+                                match Screen::all() {
+                                    Ok(screens) => {
+                                        if let Some(screen) = screens.first() {
+                                            match screen.capture() {
+                                                Ok(image) => {
+                                                    println!("[Screenshot] Captured successfully ({}x{}). Encoding...", image.width(), image.height());
+                                                    let width = image.width();
+                                                    let height = image.height();
+                                                    let rgba_buffer = image.into_raw();
+                                                    
+                                                    // Convert RGBA to RGB for JPEG encoding
+                                                    let mut rgb_buffer = Vec::with_capacity((width * height * 3) as usize);
+                                                    for chunk in rgba_buffer.chunks_exact(4) {
+                                                        rgb_buffer.push(chunk[0]); // R
+                                                        rgb_buffer.push(chunk[1]); // G
+                                                        rgb_buffer.push(chunk[2]); // B
+                                                    }
+                                                    
+                                                    let mut jpeg_buffer = Vec::new();
+                                                    let mut encoder = JpegEncoder::new(&mut jpeg_buffer);
+                                                    
+                                                    match encoder.encode(&rgb_buffer, width, height, ColorType::Rgb8.into()) {
+                                                        Ok(_) => {
+                                                            let base64_image = general_purpose::STANDARD.encode(&jpeg_buffer);
+                                                            println!("[Screenshot] Encoded to base64. Size: {} bytes. Uploading...", base64_image.len());
+                                                            
+                                                            let payload = serde_json::json!({
+                                                                "userId": capture_user_id,
+                                                                "sessionId": capture_session_id,
+                                                                "image": format!("data:image/jpeg;base64,{}", base64_image),
+                                                                "timestamp": Utc::now().to_rfc3339()
+                                                            });
+                                                            
+                                                            let url = "https://cus-monitor-dashboard.vercel.app/api/track/upload-screenshot";
+                                                            match screenshot_client.post(url).json(&payload).send().await {
+                                                                Ok(resp) => {
+                                                                    if resp.status().is_success() {
+                                                                        println!("[Screenshot] Uploaded natively! Status: {}", resp.status());
+                                                                    } else {
+                                                                        eprintln!("[Screenshot] Upload failed with status: {}", resp.status());
+                                                                    }
+                                                                },
+                                                                Err(e) => eprintln!("[Screenshot] Network error during upload: {}", e),
+                                                            }
+                                                        },
+                                                        Err(e) => eprintln!("[Screenshot] Failed to encode JPEG: {:?}", e),
+                                                    }
+                                                },
+                                                Err(e) => eprintln!("[Screenshot] Failed to capture screen: {:?}", e),
+                                            }
+                                        } else {
+                                            eprintln!("[Screenshot] No active screens found to capture.");
+                                        }
+                                    },
+                                    Err(e) => eprintln!("[Screenshot] Failed to get screens: {:?}", e),
                                 }
                             });
                             screenshot_counter = 0; // Reset counter
@@ -487,7 +473,7 @@ pub fn run() {
                         if let Some(client) = CLIENT.get() {
                             let client = client.clone();
                             tauri::async_runtime::spawn(async move {
-                                let url = "https://cus-spy-admin-dashboard.vercel.app/api/activity-log";
+                                let url = "https://cus-monitor-dashboard.vercel.app/api/activity-log";
                                 let _ = client.post(url).json(&log).send().await;
                             });
                         }

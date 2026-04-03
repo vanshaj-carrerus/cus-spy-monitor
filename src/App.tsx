@@ -97,20 +97,13 @@ function App() {
 
   const startTracking = async (userId: string) => {
     try {
-      // FIX: Call the LOCAL sidecar so it sets the activeUserId
-      await fetch(`http://localhost:3001/api/track/start`, {
+      // Notify the remote dashboard
+      await fetch(`https://cus-monitor-dashboard.vercel.app/api/track/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, sessionId })
       });
-      console.log("Local Sidecar initialized with User ID");
-
-      // Optional: Also notify the remote dashboard if needed for logs
-      await fetch(`https://cus-spy-admin-dashboard.vercel.app/api/track/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, sessionId })
-      });
+      console.log("Tracking initialized with remote dashboard");
     } catch (err) {
       console.error("Failed to initialize tracking:", err);
     }

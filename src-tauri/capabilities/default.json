@@ -12,20 +12,10 @@
     "shell:default",
     "http:default",
     {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "sidecar-worker",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
-    {
       "identifier": "http:allow-fetch",
       "allow": [
         {
-          "url": "https://cus-spy-admin-dashboard.vercel.app/*"
+          "url": "https://cus-monitor-dashboard.vercel.app/*"
         }
       ]
     }
