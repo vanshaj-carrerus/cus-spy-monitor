@@ -63,17 +63,18 @@ mod win_tracker {
     };
 
     /// Resolve the window title and executable filename from an HWND.
+    /// Resolve the window title and executable filename from an HWND.
     fn get_window_info(hwnd: HWND) -> (String, String) {
         // --- title ---
         let mut title_buf = [0u16; 512];
         let title_len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
-        let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+        let mut title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
 
         // --- app name (exe filename) ---
         let mut pid: u32 = 0;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
 
-        let app_name = if pid != 0 {
+        let mut app_name = if pid != 0 {
             unsafe {
                 match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
                     Ok(handle) => {
@@ -102,8 +103,36 @@ mod win_tracker {
             "Unknown".to_string()
         };
 
+        // Clean up app_name: remove .exe extension and capitalize
+        if app_name.to_lowercase().ends_with(".exe") {
+            app_name = app_name[..app_name.len() - 4].to_string();
+        }
+        if !app_name.is_empty() {
+             let mut chars = app_name.chars();
+             app_name = match chars.next() {
+                 None => String::new(),
+                 Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+             };
+        }
+
+        // Special case: if title is empty or just whitespace, use app_name
+        if title.trim().is_empty() {
+            title = app_name.clone();
+        }
+
         (title, app_name)
     }
+
+    /// List of system titles to ignore to avoid noise in logs
+    const IGNORE_TITLES: &[&str] = &[
+        "Task Switching",
+        "Task View",
+        "Task Manager",
+        "Windows Input Experience",
+        "Program Manager",
+        "Start",
+        "Search",
+    ];
 
     /// The raw callback fired by Windows on every EVENT_SYSTEM_FOREGROUND.
     /// Must be `unsafe extern "system"` – no closure captures allowed.
@@ -121,9 +150,6 @@ mod win_tracker {
         }
 
         let (title, app_name) = get_window_info(hwnd);
-        if title.is_empty() {
-            return;
-        }
 
         let state_arc = match TRACKING_STATE.get() {
             Some(s) => s,
@@ -142,7 +168,7 @@ mod win_tracker {
             return;
         }
 
-        // Emit log for the window that just lost focus
+        // 1. Emit log for the window that just lost focus (if it's not empty/noise)
         if !state.last_title.is_empty() {
             let secs = now.signed_duration_since(state.start_time).num_seconds();
             if secs > 0 {
@@ -162,9 +188,16 @@ mod win_tracker {
             }
         }
 
-        // Update state to the new foreground window
-        state.last_title = title;
-        state.last_app = app_name;
+        // 2. Update state to the new foreground window
+        // If it's a noise window or empty, we set it to empty so it doesn't get logged next time
+        let is_noise = title.is_empty() || IGNORE_TITLES.iter().any(|&s| title == s);
+        if is_noise {
+            state.last_title = String::new();
+            state.last_app = String::new();
+        } else {
+            state.last_title = title;
+            state.last_app = app_name;
+        }
         state.start_time = now;
     }
 
@@ -430,6 +463,77 @@ pub fn run() {
                         productive_acc   = 0;
                         unproductive_acc = 0;
                         last_heartbeat   = Instant::now();
+                    }
+                }
+            });
+
+            // ─── Live Stream Request Loop ──────────────────────────────────────────
+            tauri::async_runtime::spawn(async move {
+                let mut is_streaming = false;
+                let mut last_status_check = std::time::Instant::now();
+                
+                loop {
+                    // Small sleep depending on mode (1000ms if streaming, 3000ms if idle waiting)
+                    tokio::time::sleep(Duration::from_millis(if is_streaming { 500 } else { 3000 })).await;
+                    
+                    let current_user_id = if let Some(s) = TRACKING_STATE.get() {
+                        s.lock().unwrap().user_id.clone()
+                    } else {
+                        whoami::username()
+                    };
+
+                    // Guard: Wait until CLIENT is set to proceed
+                    let stream_client = match CLIENT.get() {
+                        Some(c) => c.clone(),
+                        None => continue,
+                    };
+
+                    // Check status every 3 seconds to see if admin started/stopped the stream
+                    if !is_streaming || last_status_check.elapsed().as_secs() >= 3 {
+                        let url = format!("https://cus-monitor-dashboard.vercel.app/api/stream?action=status&userId={}", current_user_id);
+                        if let Ok(res) = stream_client.get(&url).send().await {
+                            if let Ok(json) = res.json::<serde_json::Value>().await {
+                                if let Some(active) = json.get("isActive").and_then(|v| v.as_bool()) {
+                                    is_streaming = active;
+                                }
+                            }
+                        }
+                        last_status_check = std::time::Instant::now();
+                    }
+
+                    // If active, blast a frame off to the server
+                    if is_streaming {
+                        if let Ok(screens) = Screen::all() {
+                            if let Some(screen) = screens.first() {
+                                if let Ok(image) = screen.capture() {
+                                    let width = image.width();
+                                    let height = image.height();
+                                    let rgba_buffer = image.into_raw();
+                                    
+                                    let mut rgb_buffer = Vec::with_capacity((width * height * 3) as usize);
+                                    for chunk in rgba_buffer.chunks_exact(4) {
+                                        rgb_buffer.push(chunk[0]);
+                                        rgb_buffer.push(chunk[1]);
+                                        rgb_buffer.push(chunk[2]);
+                                    }
+                                    
+                                    let mut jpeg_buffer = Vec::new();
+                                    // Use heavily compressed JPEG for fast network streaming
+                                    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buffer, 30);
+                                    
+                                    if let Ok(_) = encoder.encode(&rgb_buffer, width, height, ColorType::Rgb8.into()) {
+                                        let base64_image = general_purpose::STANDARD.encode(&jpeg_buffer);
+                                        let payload = serde_json::json!({
+                                            "userId": current_user_id,
+                                            "frame": format!("data:image/jpeg;base64,{}", base64_image)
+                                        });
+                                        let upload_url = "https://cus-monitor-dashboard.vercel.app/api/stream?action=upload";
+                                        // Fire and forget upload (minimize lag)
+                                        let _ = stream_client.post(upload_url).json(&payload).send().await;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             });

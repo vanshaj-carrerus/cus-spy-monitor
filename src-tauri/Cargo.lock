@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "cus-monitor"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "base64 0.22.1",
  "chrono",
