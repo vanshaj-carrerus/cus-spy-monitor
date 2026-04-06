@@ -46,6 +46,69 @@ struct TrackingState {
 static TRACKING_STATE: OnceLock<Arc<Mutex<TrackingState>>> = OnceLock::new();
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
+#[inline]
+fn put_rgba_pixel(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let idx = ((y as u32 * width + x as u32) * 4) as usize;
+    if idx + 3 >= rgba.len() {
+        return;
+    }
+    rgba[idx] = color[0];
+    rgba[idx + 1] = color[1];
+    rgba[idx + 2] = color[2];
+    rgba[idx + 3] = color[3];
+}
+
+#[inline]
+fn draw_cursor_on_frame(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32) {
+    // Realistic arrow-like pointer (shadow + black stroke + white fill).
+    // This is intentionally simple/fast because it runs every frame.
+    let cursor_h = 24i32;
+    let cursor_w = 16i32;
+
+    // Shadow
+    for dy in 0..cursor_h {
+        let row_w = ((dy as f32 / cursor_h as f32) * cursor_w as f32).max(1.0) as i32;
+        for dx in 0..=row_w {
+            put_rgba_pixel(
+                rgba,
+                width,
+                height,
+                x + dx + 2,
+                y + dy + 2,
+                [0, 0, 0, 110],
+            );
+        }
+    }
+
+    // Black outline
+    for dy in 0..cursor_h {
+        let row_w = ((dy as f32 / cursor_h as f32) * cursor_w as f32).max(1.0) as i32;
+        put_rgba_pixel(rgba, width, height, x, y + dy, [0, 0, 0, 255]);
+        put_rgba_pixel(rgba, width, height, x + row_w, y + dy, [0, 0, 0, 255]);
+    }
+    for dx in 0..cursor_w {
+        put_rgba_pixel(rgba, width, height, x + dx, y, [0, 0, 0, 255]);
+    }
+    put_rgba_pixel(rgba, width, height, x + 3, y + 18, [0, 0, 0, 255]);
+    put_rgba_pixel(rgba, width, height, x + 4, y + 19, [0, 0, 0, 255]);
+    put_rgba_pixel(rgba, width, height, x + 5, y + 20, [0, 0, 0, 255]);
+
+    // White fill
+    for dy in 1..cursor_h - 1 {
+        let row_w = ((dy as f32 / cursor_h as f32) * cursor_w as f32).max(1.0) as i32;
+        for dx in 1..row_w {
+            put_rgba_pixel(rgba, width, height, x + dx, y + dy, [245, 245, 245, 255]);
+        }
+    }
+
+    // Small inner gray detail near the tail for realism
+    put_rgba_pixel(rgba, width, height, x + 4, y + 17, [170, 170, 170, 255]);
+    put_rgba_pixel(rgba, width, height, x + 5, y + 18, [170, 170, 170, 255]);
+}
+
 // ─── Windows-specific event hook module ──────────────────────────────────────
 #[cfg(target_os = "windows")]
 mod win_tracker {
@@ -589,7 +652,8 @@ pub fn run() {
                                         });
 
                                         // 2. Create source and publish track
-                                        let native_source = NativeVideoSource::new(VideoResolution { width: 1280, height: 720 }, true);
+                                        // Prefer full-HD source for sharper remote readability.
+                                        let native_source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
                                         let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(native_source.clone()));
                                         
                                         info!("[LiveKit] Publishing video track...");
@@ -602,10 +666,10 @@ pub fn run() {
                                                 let cap_source = native_source.clone();
                                                 tauri::async_runtime::spawn(async move {
                                                     info!("[LiveKit] Capture task started");
+                                                    let device_state = DeviceState::new();
+                                                    const TARGET_FRAME_MS: u64 = 33; // ~30 FPS
                                                     while *cap_status_rx.borrow() {
                                                         let start = Instant::now();
-                                                        // Diagnostic print as requested
-                                                        println!("DEBUG: Captured frame at {:?}", std::time::Instant::now());
 
                                                         if let Ok(screens) = Screen::all() {
                                                             if let Some(screen) = screens.first() {
@@ -618,7 +682,17 @@ pub fn run() {
                                                                     if w % 2 != 0 { w -= 1; }
                                                                     if h % 2 != 0 { h -= 1; }
 
-                                                                    let rgba = img.into_raw();
+                                                                    let mut rgba = img.into_raw();
+                                                                    let mouse = device_state.get_mouse();
+                                                                    // For now, we assume the primary monitor starts at (0,0).
+                                                                    // Coordinates are safely clamped by put_rgba_pixel.
+                                                                    draw_cursor_on_frame(
+                                                                        &mut rgba,
+                                                                        w,
+                                                                        h,
+                                                                        mouse.coords.0,
+                                                                        mouse.coords.1,
+                                                                    );
                                                                     let mut i420 = I420Buffer::new(w, h);
                                                                     let (stride_y, stride_u, stride_v) = i420.strides();
                                                                     let (data_y, data_u, data_v) = i420.data_mut();
@@ -644,7 +718,7 @@ pub fn run() {
                                                                         }
                                                                     }
                                                                     cap_source.capture_frame(&VideoFrame {
-                                                                        timestamp_us: Instant::now().elapsed().as_micros() as i64,
+                                                                        timestamp_us: Utc::now().timestamp_micros(),
                                                                         rotation: VideoRotation::VideoRotation0,
                                                                         buffer: i420,
                                                                     });
@@ -652,8 +726,8 @@ pub fn run() {
                                                             }
                                                         }
                                                         let elapsed = start.elapsed();
-                                                        if elapsed < Duration::from_millis(66) {
-                                                            tokio::time::sleep(Duration::from_millis(66) - elapsed).await;
+                                                        if elapsed < Duration::from_millis(TARGET_FRAME_MS) {
+                                                            tokio::time::sleep(Duration::from_millis(TARGET_FRAME_MS) - elapsed).await;
                                                         }
                                                     }
                                                     info!("[LiveKit] Capture task stopped");
