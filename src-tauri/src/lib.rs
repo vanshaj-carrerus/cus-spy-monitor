@@ -1,5 +1,6 @@
 use tauri::{Manager, Emitter, RunEvent};
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicI64, Ordering};
 use tauri_plugin_updater::UpdaterExt;
 use serde::{Serialize, Deserialize};
 use chrono::Utc;
@@ -18,6 +19,8 @@ use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use log::{info, error, warn, debug};
+
+static LAST_INPUT_TS: AtomicI64 = AtomicI64::new(0);
 
 // ─── Shared HTTP Client ──────────────────────────────────────────────────────
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -107,6 +110,128 @@ fn draw_cursor_on_frame(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32
     // Small inner gray detail near the tail for realism
     put_rgba_pixel(rgba, width, height, x + 4, y + 17, [170, 170, 170, 255]);
     put_rgba_pixel(rgba, width, height, x + 5, y + 18, [170, 170, 170, 255]);
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "t")]
+enum RemoteControlCommand {
+    #[serde(rename = "mouseMove")]
+    MouseMove { x: f32, y: f32 },
+    #[serde(rename = "mouseDown")]
+    MouseDown { button: i32, x: f32, y: f32 },
+    #[serde(rename = "mouseUp")]
+    MouseUp { button: i32, x: f32, y: f32 },
+    #[serde(rename = "mouseWheel")]
+    MouseWheel { #[serde(rename = "deltaY")] delta_y: f32, x: f32, y: f32 },
+    #[serde(rename = "keyDown")]
+    KeyDown { key: String, code: String },
+    #[serde(rename = "keyUp")]
+    KeyUp { key: String, code: String },
+}
+
+#[cfg(target_os = "windows")]
+mod remote_input {
+    use super::RemoteControlCommand;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_MOUSE, INPUT_KEYBOARD, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSE_EVENT_FLAGS,
+        MOUSEINPUT, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_SHIFT,
+        VIRTUAL_KEY, MapVirtualKeyW, MAPVK_VK_TO_VSC,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    fn clamp01(v: f32) -> f32 {
+        if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v }
+    }
+
+    fn to_abs_coords(x: f32, y: f32) -> (i32, i32) {
+        let width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
+        let height = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
+        let nx = (clamp01(x) * 65535.0) as i32;
+        let ny = (clamp01(y) * 65535.0) as i32;
+        let _ = (width, height);
+        (nx, ny)
+    }
+
+    fn send_mouse(flags: MOUSE_EVENT_FLAGS, x: i32, y: i32, data: i32) {
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: x,
+                    dy: y,
+                    mouseData: data as u32,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe { let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32); }
+    }
+
+    fn send_key(vk: u16, key_up: bool) {
+        let flags = if key_up { KEYEVENTF_KEYUP } else { Default::default() };
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16 },
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe { let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32); }
+    }
+
+    fn key_to_vk(code: &str, key: &str) -> Option<u16> {
+        let c = code.to_uppercase();
+        match c.as_str() {
+            "SHIFTLEFT" | "SHIFTRIGHT" => Some(VK_SHIFT.0),
+            "CONTROLLEFT" | "CONTROLRIGHT" => Some(VK_CONTROL.0),
+            "ALTLEFT" | "ALTRIGHT" => Some(VK_MENU.0),
+            _ => {
+                let k = if key.len() == 1 { key.chars().next()?.to_ascii_uppercase() as u16 } else { 0 };
+                if k >= 0x30 && k <= 0x5A { Some(k) } else { None }
+            }
+        }
+    }
+
+    pub fn execute(cmd: RemoteControlCommand) {
+        match cmd {
+            RemoteControlCommand::MouseMove { x, y } => {
+                let (ax, ay) = to_abs_coords(x, y);
+                send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0);
+            }
+            RemoteControlCommand::MouseDown { button, x, y } => {
+                let (ax, ay) = to_abs_coords(x, y);
+                send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0);
+                let flag = match button { 2 => MOUSEEVENTF_RIGHTDOWN, 1 => MOUSEEVENTF_MIDDLEDOWN, _ => MOUSEEVENTF_LEFTDOWN };
+                send_mouse(flag, 0, 0, 0);
+            }
+            RemoteControlCommand::MouseUp { button, x, y } => {
+                let (ax, ay) = to_abs_coords(x, y);
+                send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0);
+                let flag = match button { 2 => MOUSEEVENTF_RIGHTUP, 1 => MOUSEEVENTF_MIDDLEUP, _ => MOUSEEVENTF_LEFTUP };
+                send_mouse(flag, 0, 0, 0);
+            }
+            RemoteControlCommand::MouseWheel { delta_y, x, y } => {
+                let (ax, ay) = to_abs_coords(x, y);
+                send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0);
+                send_mouse(MOUSEEVENTF_WHEEL, 0, 0, (-delta_y as i32).clamp(-240, 240));
+            }
+            RemoteControlCommand::KeyDown { key, code } => {
+                if let Some(vk) = key_to_vk(&code, &key) { send_key(vk, false); }
+            }
+            RemoteControlCommand::KeyUp { key, code } => {
+                if let Some(vk) = key_to_vk(&code, &key) { send_key(vk, true); }
+            }
+        }
+    }
 }
 
 // ─── Windows-specific event hook module ──────────────────────────────────────
@@ -338,6 +463,7 @@ fn set_active_user(user_id: String, username: Option<String>) {
 pub fn run() {
     // Use whoami for more reliable username detection in production/admin environments
     let user_id = whoami::username();
+    LAST_INPUT_TS.store(Utc::now().timestamp(), Ordering::Relaxed);
 
     let tracking_state = Arc::new(Mutex::new(TrackingState {
         last_title: String::new(),
@@ -433,6 +559,7 @@ pub fn run() {
                     // Productive if any keyboard/mouse activity occurred in this second.
                     if has_activity {
                         productive_acc += 1;
+                        LAST_INPUT_TS.store(Utc::now().timestamp(), Ordering::Relaxed);
                     } else {
                         unproductive_acc += 1;
                     }
@@ -571,10 +698,16 @@ pub fn run() {
                             uname
                         );
 
-                        match stream_client.get(&status_url).send().await {
+                        match stream_client
+                            .get(&status_url)
+                            .header("x-client-type", "agent")
+                            .send()
+                            .await
+                        {
                             Ok(res) => {
                                 if let Ok(json) = res.json::<serde_json::Value>().await {
-                                    let active = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let active = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false)
+                                        && json.get("isUserActive").and_then(|v| v.as_bool()).unwrap_or(true);
                                     let _ = poll_tx.send(active);
                                 }
                             }
@@ -602,7 +735,7 @@ pub fn run() {
                     info!("[LiveKit] 🚀 Activating stream for: {}", uname);
 
                     let token_url = format!(
-                        "https://cus-monitor-dashboard.vercel.app/api/stream/token?room=room_{}&identity={}",
+                        "https://cus-monitor-dashboard.vercel.app/api/stream/token?room=room_{}&identity=agent_{}&clientType=agent",
                         uname, uname
                     );
 
@@ -626,6 +759,18 @@ pub fn run() {
                                                 match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
                                                     Ok(Some(event)) => {
                                                         match event {
+                                                            RoomEvent::DataReceived { payload, .. } => {
+                                                                let payload_str = String::from_utf8_lossy(&payload).to_string();
+                                                                match serde_json::from_str::<RemoteControlCommand>(&payload_str) {
+                                                                    Ok(cmd) => {
+                                                                        #[cfg(target_os = "windows")]
+                                                                        {
+                                                                            remote_input::execute(cmd);
+                                                                        }
+                                                                    }
+                                                                    Err(e) => warn!("[LiveKit] Invalid control command: {}", e),
+                                                                }
+                                                            }
                                                             RoomEvent::TrackPublished { publication, participant } => {
                                                                 info!("[LiveKit] Event: Track Published! SID: {}, Participant: {}", publication.sid(), participant.identity());
                                                             },
@@ -730,9 +875,30 @@ pub fn run() {
                                                     info!("[LiveKit] Capture task stopped");
                                                 });
 
-                                                // 4. WAIT FOR DEACTIVATION
+                                                // 4. WAIT FOR DEACTIVATION OR INACTIVITY (checked every 10s)
                                                 while *status_rx.borrow() {
-                                                    if let Err(_) = status_rx.changed().await { break; }
+                                                    let last_input = LAST_INPUT_TS.load(Ordering::Relaxed);
+                                                    let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
+                                                    if idle_seconds >= 10 {
+                                                        warn!("[LiveKit] User inactive for {}s. Auto-stopping stream.", idle_seconds);
+                                                        let stop_url = "https://cus-monitor-dashboard.vercel.app/api/stream?action=toggle";
+                                                        let stop_payload = serde_json::json!({
+                                                            "userId": uname,
+                                                            "isActive": false,
+                                                            "controlEnabled": false,
+                                                            "reasonStopped": "user_became_inactive"
+                                                        });
+                                                        let _ = stream_client
+                                                            .post(stop_url)
+                                                            .header("Content-Type", "application/json")
+                                                            .header("x-client-type", "agent")
+                                                            .json(&stop_payload)
+                                                            .send()
+                                                            .await;
+                                                        let _ = status_tx.send(false);
+                                                        break;
+                                                    }
+                                                    tokio::time::sleep(Duration::from_secs(10)).await;
                                                 }
 
                                                 info!("[LiveKit] ⏹ Deactivating. Closing room...");
