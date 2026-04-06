@@ -1,0 +1,41 @@
+﻿cargo :     Checking 
+cus-monitor v0.1.24 (D:\co
+de\cus-spy-monitor\cus-spy
+-monitor\src-tauri)
+At line:1 char:1
++ cargo check > 
+build_error.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (   
+     Checking cu...itor   
+ \src-tauri):String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+error: cannot find macro 
+`warn` in this scope
+   --> src\lib.rs:576:65
+    |
+576 | ...                 
+  warn!("[LiveKit] Event: 
+Disconnected from room: 
+{:?}", reason);
+    |                     
+  ^^^^
+    |
+    = note: `warn` is in 
+scope, but it is an 
+attribute: `#[warn]`
+help: consider importing 
+this macro
+    |
+  1 + use log::warn;
+    |
+
+error: could not compile 
+`cus-monitor` (lib) due 
+to 1 previous error

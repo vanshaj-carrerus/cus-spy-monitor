@@ -1,6 +1,6 @@
 [package]
 name = "cus-monitor"
-version = "0.1.24"
+version = "0.1.25"
 description = "Monitoring the Employees of CUS"
 authors = ["you"]
 edition = "2021"
@@ -42,10 +42,11 @@ tauri-plugin-log = "2.8.0"
 screenshots = "0.8.10"
 base64 = "0.22.1"
 image = "0.25.10"
-livekit = "0.7"
+livekit = { version = "0.7", features = ["native-tls"] }
 futures-util = "0.3"
 tokio-stream = "0.1"
 libc = "0.2"
+log = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
