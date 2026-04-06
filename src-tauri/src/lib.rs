@@ -401,22 +401,23 @@ pub fn run() {
                 }
             });
 
-            // ─── Idle-aware heartbeat loop ─────────────────────────────────────────
-            // Runs every 1 s, accumulates productive / unproductive seconds,
-            // then emits "send-heartbeat" to the frontend every 60 s.
+            // ─── Activity-aware heartbeat loop ─────────────────────────────────────
+            // Runs every 1 s, classifies each second as productive/unproductive
+            // based on keyboard/mouse activity, then emits heartbeat every 120 s.
             let heartbeat_handle = app.handle().clone();
             let hb_user_id = whoami::username();
             let session_id = format!("session-{}", Utc::now().timestamp());
 
             tauri::async_runtime::spawn(async move {
                 let device_state = DeviceState::new();
+                const HEARTBEAT_INTERVAL_SECS: u64 = 120; // 2 minutes
+                const SCREENSHOT_INTERVAL_SECS: u64 = 15 * 60; // 15 minutes
 
                 let mut productive_acc: u64 = 0;
                 let mut unproductive_acc: u64 = 0;
-                let mut last_input    = Instant::now();
                 let mut last_heartbeat = Instant::now();
                 let mut last_mouse_coords = (0i32, 0i32);
-                let mut screenshot_counter: u32 = 0; // New counter for screenshots
+                let mut screenshot_elapsed_secs: u64 = 0;
 
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -429,20 +430,16 @@ pub fn run() {
                         || coords != last_mouse_coords
                         || mouse.button_pressed.iter().any(|&p| p);
 
+                    // Productive if any keyboard/mouse activity occurred in this second.
                     if has_activity {
-                        last_input = Instant::now();
-                        last_mouse_coords = coords;
-                    }
-
-                    // >60 s without input → unproductive
-                    if last_input.elapsed().as_secs() > 60 {
-                        unproductive_acc += 1;
-                    } else {
                         productive_acc += 1;
+                    } else {
+                        unproductive_acc += 1;
                     }
+                    last_mouse_coords = coords;
 
-                    // Report heartbeat directly from background every 1 min
-                    if last_heartbeat.elapsed().as_secs() >= 60 {
+                    // Report heartbeat directly from background every 2 minutes
+                    if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_INTERVAL_SECS {
                         // Get latest user_id from state
                         let current_user_id = if let Some(s) = TRACKING_STATE.get() {
                             s.lock().unwrap().user_id.clone()
@@ -469,9 +466,9 @@ pub fn run() {
                             let _ = client.post(url).json(&hb_payload).send().await;
                         });
 
-                        // 3. Trigger Screenshot natively every 15 minutes (every 15 × 60s heartbeats)
-                        screenshot_counter += 1;
-                        if screenshot_counter >= 15 {
+                        // 3. Trigger screenshot every 15 minutes total runtime
+                        screenshot_elapsed_secs += HEARTBEAT_INTERVAL_SECS;
+                        if screenshot_elapsed_secs >= SCREENSHOT_INTERVAL_SECS {
                             let screenshot_client = CLIENT.get().unwrap().clone();
                             let capture_user_id = current_user_id.clone();
                             let capture_session_id = session_id.clone();
@@ -534,7 +531,7 @@ pub fn run() {
                                     Err(e) => error!("[Screenshot] Failed to get screens: {:?}", e),
                                 }
                             });
-                            screenshot_counter = 0; // Reset counter
+                            screenshot_elapsed_secs = 0;
                         }
 
                         productive_acc   = 0;
