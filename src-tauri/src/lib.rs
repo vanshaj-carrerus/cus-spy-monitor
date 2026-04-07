@@ -132,14 +132,29 @@ enum RemoteControlCommand {
 #[cfg(target_os = "windows")]
 mod remote_input {
     use super::RemoteControlCommand;
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_MOUSE, INPUT_KEYBOARD, MOUSEEVENTF_LEFTDOWN,
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_MIDDLEDOWN,
         MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSE_EVENT_FLAGS,
-        MOUSEINPUT, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_SHIFT,
+        MOUSEINPUT, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_SHIFT, BlockInput,
         VIRTUAL_KEY, MapVirtualKeyW, MAPVK_VK_TO_VSC,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    #[derive(Default)]
+    struct InputState {
+        pressed_keys: HashSet<u16>,
+        pressed_buttons: HashSet<i32>,
+        control_active: bool,
+    }
+
+    static INPUT_STATE: OnceLock<Mutex<InputState>> = OnceLock::new();
+
+    fn state() -> &'static Mutex<InputState> {
+        INPUT_STATE.get_or_init(|| Mutex::new(InputState::default()))
+    }
 
     fn clamp01(v: f32) -> f32 {
         if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v }
@@ -188,6 +203,41 @@ mod remote_input {
         unsafe { let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32); }
     }
 
+    fn release_all_locked() {
+        // Release any keys/buttons we previously pressed so the user's machine isn't left "stuck".
+        let mut st = state().lock().unwrap();
+
+        for vk in st.pressed_keys.drain() {
+            send_key(vk, true);
+        }
+
+        // Release mouse buttons (best-effort).
+        for b in st.pressed_buttons.drain() {
+            let flag = match b { 2 => MOUSEEVENTF_RIGHTUP, 1 => MOUSEEVENTF_MIDDLEUP, _ => MOUSEEVENTF_LEFTUP };
+            send_mouse(flag, 0, 0, 0);
+        }
+    }
+
+    pub fn set_control_active(active: bool) {
+        {
+            let mut st = state().lock().unwrap();
+            if st.control_active == active {
+                return;
+            }
+            st.control_active = active;
+        }
+
+        // BlockInput blocks physical mouse/keyboard from the local user (but still allows SendInput).
+        unsafe {
+            let _ = BlockInput(active);
+        }
+
+        if !active {
+            release_all_locked();
+            unsafe { let _ = BlockInput(false); }
+        }
+    }
+
     fn key_to_vk(code: &str, key: &str) -> Option<u16> {
         let c = code.to_uppercase();
         match c.as_str() {
@@ -212,12 +262,16 @@ mod remote_input {
                 send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0);
                 let flag = match button { 2 => MOUSEEVENTF_RIGHTDOWN, 1 => MOUSEEVENTF_MIDDLEDOWN, _ => MOUSEEVENTF_LEFTDOWN };
                 send_mouse(flag, 0, 0, 0);
+                let mut st = state().lock().unwrap();
+                st.pressed_buttons.insert(button);
             }
             RemoteControlCommand::MouseUp { button, x, y } => {
                 let (ax, ay) = to_abs_coords(x, y);
                 send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0);
                 let flag = match button { 2 => MOUSEEVENTF_RIGHTUP, 1 => MOUSEEVENTF_MIDDLEUP, _ => MOUSEEVENTF_LEFTUP };
                 send_mouse(flag, 0, 0, 0);
+                let mut st = state().lock().unwrap();
+                st.pressed_buttons.remove(&button);
             }
             RemoteControlCommand::MouseWheel { delta_y, x, y } => {
                 let (ax, ay) = to_abs_coords(x, y);
@@ -225,10 +279,18 @@ mod remote_input {
                 send_mouse(MOUSEEVENTF_WHEEL, 0, 0, (-delta_y as i32).clamp(-240, 240));
             }
             RemoteControlCommand::KeyDown { key, code } => {
-                if let Some(vk) = key_to_vk(&code, &key) { send_key(vk, false); }
+                if let Some(vk) = key_to_vk(&code, &key) {
+                    send_key(vk, false);
+                    let mut st = state().lock().unwrap();
+                    st.pressed_keys.insert(vk);
+                }
             }
             RemoteControlCommand::KeyUp { key, code } => {
-                if let Some(vk) = key_to_vk(&code, &key) { send_key(vk, true); }
+                if let Some(vk) = key_to_vk(&code, &key) {
+                    send_key(vk, true);
+                    let mut st = state().lock().unwrap();
+                    st.pressed_keys.remove(&vk);
+                }
             }
         }
     }
@@ -670,12 +732,24 @@ pub fn run() {
 
             // ─── Live Stream Room Logic (LiveKit) ──────────────────────────────
             tauri::async_runtime::spawn(async move {
-                let (status_tx, mut status_rx) = tokio::sync::watch::channel(false);
+                #[derive(Clone, Debug)]
+                struct StreamStatus {
+                    active: bool,
+                    control_enabled: bool,
+                    controller_id: String,
+                }
+
+                let (status_tx, mut status_rx) = tokio::sync::watch::channel(StreamStatus {
+                    active: false,
+                    control_enabled: false,
+                    controller_id: String::new(),
+                });
                 let poll_tx = status_tx.clone();
 
-                // 1. Status Polling Task (Every 10 seconds)
+                // 1. Status Polling Task (fast, 1s interval so control release feels instant)
                 tauri::async_runtime::spawn(async move {
-                    info!("[LiveKit] Polling task started (10s interval)");
+                    info!("[LiveKit] Polling task started (1s interval)");
+                    let mut last_control_enabled = false;
                     loop {
                         let (_uid, uname) = if let Some(s) = TRACKING_STATE.get() {
                             let state = s.lock().unwrap();
@@ -708,21 +782,33 @@ pub fn run() {
                                 if let Ok(json) = res.json::<serde_json::Value>().await {
                                     let active = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false)
                                         && json.get("isUserActive").and_then(|v| v.as_bool()).unwrap_or(true);
-                                    let _ = poll_tx.send(active);
+                                    let control_enabled = json.get("controlEnabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let controller_id = json.get("controllerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                                    // Apply local input lock/unlock immediately on poll changes.
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        if control_enabled != last_control_enabled {
+                                            remote_input::set_control_active(control_enabled);
+                                            last_control_enabled = control_enabled;
+                                        }
+                                    }
+
+                                    let _ = poll_tx.send(StreamStatus { active, control_enabled, controller_id });
                                 }
                             }
                             Err(e) => error!("[LiveKit] Status poll error: {}", e),
                         }
-                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 });
 
                 // 2. Stream Controller Task
                 loop {
                     // Wait for isActive to become true
-                    if !*status_rx.borrow() {
+                    if !status_rx.borrow().active {
                         if let Err(_) = status_rx.changed().await { break; }
-                        if !*status_rx.borrow() { continue; }
+                        if !status_rx.borrow().active { continue; }
                     }
 
                     // START STREAMING
@@ -755,11 +841,28 @@ pub fn run() {
                                         tauri::async_runtime::spawn(async move {
                                             info!("[LiveKit] Room event task starting...");
                                             info!("[LiveKit] Event task started");
-                                            while *evt_status_rx.borrow() {
+                                            while evt_status_rx.borrow().active {
                                                 match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
                                                     Ok(Some(event)) => {
                                                         match event {
-                                                            RoomEvent::DataReceived { payload, .. } => {
+                                                            RoomEvent::DataReceived { payload, participant, topic, .. } => {
+                                                                // Only accept remote-control packets when server says control is enabled,
+                                                                // and only from the current controller (admin has priority).
+                                                                let st = evt_status_rx.borrow().clone();
+                                                                if !st.control_enabled {
+                                                                    continue;
+                                                                }
+                                                                if topic.as_deref().unwrap_or("") != "remote-control" {
+                                                                    continue;
+                                                                }
+                                                                let sender_identity = participant
+                                                                    .as_ref()
+                                                                    .map(|p| p.identity().to_string())
+                                                                    .unwrap_or_default();
+                                                                if !st.controller_id.is_empty() && sender_identity != st.controller_id {
+                                                                    continue;
+                                                                }
+
                                                                 let payload_str = String::from_utf8_lossy(&payload).to_string();
                                                                 match serde_json::from_str::<RemoteControlCommand>(&payload_str) {
                                                                     Ok(cmd) => {
@@ -790,6 +893,11 @@ pub fn run() {
                                                     Err(_) => {} // Timeout – check borrow() and loop
                                                 }
                                             }
+                                            // Ensure we never leave the user input blocked if we exit this task.
+                                            #[cfg(target_os = "windows")]
+                                            {
+                                                remote_input::set_control_active(false);
+                                            }
                                             info!("[LiveKit] Event task stopped");
                                         });
 
@@ -810,7 +918,7 @@ pub fn run() {
                                                     info!("[LiveKit] Capture task started");
                                                     let device_state = DeviceState::new();
                                                     const TARGET_FRAME_MS: u64 = 33; // ~30 FPS
-                                                    while *cap_status_rx.borrow() {
+                                                    while cap_status_rx.borrow().active {
                                                         let start = Instant::now();
 
                                                         if let Ok(screens) = Screen::all() {
@@ -876,7 +984,7 @@ pub fn run() {
                                                 });
 
                                                 // 4. WAIT FOR DEACTIVATION OR INACTIVITY (checked every 10s)
-                                                while *status_rx.borrow() {
+                                                while status_rx.borrow().active {
                                                     let last_input = LAST_INPUT_TS.load(Ordering::Relaxed);
                                                     let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
                                                     if idle_seconds >= 10 {
@@ -895,13 +1003,17 @@ pub fn run() {
                                                             .json(&stop_payload)
                                                             .send()
                                                             .await;
-                                                        let _ = status_tx.send(false);
+                                                        let _ = status_tx.send(StreamStatus { active: false, control_enabled: false, controller_id: String::new() });
                                                         break;
                                                     }
                                                     tokio::time::sleep(Duration::from_secs(10)).await;
                                                 }
 
                                                 info!("[LiveKit] ⏹ Deactivating. Closing room...");
+                                                #[cfg(target_os = "windows")]
+                                                {
+                                                    remote_input::set_control_active(false);
+                                                }
                                                 let _ = room.close().await;
                                             }
                                             Err(e) => error!("[LiveKit] ❌ Failed to publish track: {:?}", e),
