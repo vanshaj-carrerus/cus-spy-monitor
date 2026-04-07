@@ -585,7 +585,17 @@ pub fn run() {
                     .await
                 {
                     let _ = update.download_and_install(|_cl, _tl| {}, || {}).await;
-                    let _ = handle.restart();
+                    // Don't restart in the user's face. Wait until the PC is idle,
+                    // then relaunch into the updated version.
+                    loop {
+                        let last_input = LAST_INPUT_TS.load(Ordering::Relaxed);
+                        let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
+                        if idle_seconds >= 300 {
+                            let _ = handle.restart();
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
                 }
             });
 
@@ -780,8 +790,9 @@ pub fn run() {
                         {
                             Ok(res) => {
                                 if let Ok(json) = res.json::<serde_json::Value>().await {
-                                    let active = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false)
-                                        && json.get("isUserActive").and_then(|v| v.as_bool()).unwrap_or(true);
+                                    // Livestream must not be blocked by productivity/inactivity heuristics.
+                                    // Server decides whether stream is toggled on; "PC active" is reported separately.
+                                    let active = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false);
                                     let control_enabled = json.get("controlEnabled").and_then(|v| v.as_bool()).unwrap_or(false);
                                     let controller_id = json.get("controllerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
@@ -983,29 +994,8 @@ pub fn run() {
                                                     info!("[LiveKit] Capture task stopped");
                                                 });
 
-                                                // 4. WAIT FOR DEACTIVATION OR INACTIVITY (checked every 10s)
+                                                // 4. WAIT FOR DEACTIVATION (checked every 10s)
                                                 while status_rx.borrow().active {
-                                                    let last_input = LAST_INPUT_TS.load(Ordering::Relaxed);
-                                                    let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
-                                                    if idle_seconds >= 10 {
-                                                        warn!("[LiveKit] User inactive for {}s. Auto-stopping stream.", idle_seconds);
-                                                        let stop_url = "https://cus-monitor-dashboard.vercel.app/api/stream?action=toggle";
-                                                        let stop_payload = serde_json::json!({
-                                                            "userId": uname,
-                                                            "isActive": false,
-                                                            "controlEnabled": false,
-                                                            "reasonStopped": "user_became_inactive"
-                                                        });
-                                                        let _ = stream_client
-                                                            .post(stop_url)
-                                                            .header("Content-Type", "application/json")
-                                                            .header("x-client-type", "agent")
-                                                            .json(&stop_payload)
-                                                            .send()
-                                                            .await;
-                                                        let _ = status_tx.send(StreamStatus { active: false, control_enabled: false, controller_id: String::new() });
-                                                        break;
-                                                    }
                                                     tokio::time::sleep(Duration::from_secs(10)).await;
                                                 }
 

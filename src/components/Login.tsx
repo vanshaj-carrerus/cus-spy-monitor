@@ -9,10 +9,8 @@ interface LoginProps {
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
-    const [username, setUsername] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [role, setRole] = useState('sales');
     const [loading, setLoading] = useState(false);
 
     const handleLogin = async (e: React.FormEvent) => {
@@ -23,7 +21,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             const response = await fetch('https://cus-monitor-dashboard.vercel.app/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, email, role })
+                body: JSON.stringify({ email, password })
             });
 
             const data = await response.json();
@@ -55,17 +53,6 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 </div>
                 <form className="login-form" onSubmit={handleLogin}>
                     <div className="input-group">
-                        <label htmlFor="username">Username</label>
-                        <input
-                            type="text"
-                            id="username"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            placeholder="Enter your username"
-                            required
-                        />
-                    </div>
-                    <div className="input-group">
                         <label htmlFor="email">Email Address</label>
                         <input
                             type="email"
@@ -86,20 +73,6 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                             placeholder="Enter your password"
                             required
                         />
-                    </div>
-                    <div className="input-group">
-                        <label htmlFor="role">Assigned Role</label>
-                        <select
-                            id="role"
-                            value={role}
-                            onChange={(e) => setRole(e.target.value)}
-                            required
-                        >
-                            <option value="admin">Administrator</option>
-                            <option value="manager">Manager</option>
-                            <option value="marketing">Marketing Agent</option>
-                            <option value="sales">Sales Representative</option>
-                        </select>
                     </div>
                     <button type="submit" className="login-button" disabled={loading}>
                         {loading ? 'Authenticating...' : 'Sign In'}
