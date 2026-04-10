@@ -18,7 +18,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         setLoading(true);
 
         try {
-            const response = await fetch('https://cus-monitor-dashboard.vercel.app/api/auth/login', {
+            const response = await fetch('https://app.custech.co/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email, password })

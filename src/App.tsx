@@ -101,7 +101,7 @@ function App() {
   const startTracking = async (userId: string) => {
     try {
       // Notify the remote dashboard
-      await fetch(`https://cus-monitor-dashboard.vercel.app/api/track/start`, {
+      await fetch(`https://app.custech.co/api/track/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, sessionId })

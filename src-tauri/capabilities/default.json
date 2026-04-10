@@ -15,7 +15,7 @@
       "identifier": "http:allow-fetch",
       "allow": [
         {
-          "url": "https://cus-monitor-dashboard.vercel.app/*"
+          "url": "https://app.custech.co/*"
         }
       ]
     }

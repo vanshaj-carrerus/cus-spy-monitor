@@ -466,7 +466,7 @@ mod win_tracker {
             None => return,
         };
         tauri::async_runtime::spawn(async move {
-            let url = "https://cus-monitor-dashboard.vercel.app/api/activity-log";
+            let url = "https://app.custech.co/api/activity-log";
             let _ = client.post(url).json(&log).send().await;
         });
     }
@@ -592,7 +592,6 @@ pub fn run() {
                         let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
                         if idle_seconds >= 300 {
                             let _ = handle.restart();
-                            break;
                         }
                         tokio::time::sleep(Duration::from_secs(30)).await;
                     }
@@ -661,7 +660,7 @@ pub fn run() {
                         let client = CLIENT.get().unwrap().clone();
                         let hb_payload = payload.clone();
                         tauri::async_runtime::spawn(async move {
-                            let url = "https://cus-monitor-dashboard.vercel.app/api/track/heartbeat";
+                            let url = "https://app.custech.co/api/track/heartbeat";
                             let _ = client.post(url).json(&hb_payload).send().await;
                         });
 
@@ -706,7 +705,7 @@ pub fn run() {
                                                                 "timestamp": Utc::now().to_rfc3339()
                                                             });
                                                             
-                                                            let url = "https://cus-monitor-dashboard.vercel.app/api/track/upload-screenshot";
+                                                            let url = "https://app.custech.co/api/track/upload-screenshot";
                                                             match screenshot_client.post(url).json(&payload).send().await {
                                                                 Ok(resp) => {
                                                                     if resp.status().is_success() {
@@ -778,7 +777,7 @@ pub fn run() {
                         };
 
                         let status_url = format!(
-                            "https://cus-monitor-dashboard.vercel.app/api/stream?action=status&userId={}",
+                            "https://app.custech.co/api/stream?action=status&userId={}",
                             uname
                         );
 
@@ -832,7 +831,7 @@ pub fn run() {
                     info!("[LiveKit] 🚀 Activating stream for: {}", uname);
 
                     let token_url = format!(
-                        "https://cus-monitor-dashboard.vercel.app/api/stream/token?room=room_{}&identity=agent_{}&clientType=agent",
+                        "https://app.custech.co/api/stream/token?room=room_{}&identity=agent_{}&clientType=agent",
                         uname, uname
                     );
 
@@ -1058,7 +1057,7 @@ pub fn run() {
                         if let Some(client) = CLIENT.get() {
                             let client = client.clone();
                             tauri::async_runtime::spawn(async move {
-                                let url = "https://cus-monitor-dashboard.vercel.app/api/activity-log";
+                                let url = "https://app.custech.co/api/activity-log";
                                 let _ = client.post(url).json(&log).send().await;
                             });
                         }
