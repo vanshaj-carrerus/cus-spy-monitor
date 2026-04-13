@@ -134,6 +134,7 @@ mod remote_input {
     use super::RemoteControlCommand;
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
+    use log::{info, warn};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_MOUSE, INPUT_KEYBOARD, MOUSEEVENTF_LEFTDOWN,
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_MIDDLEDOWN,
