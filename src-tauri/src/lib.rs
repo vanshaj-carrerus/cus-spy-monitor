@@ -139,7 +139,12 @@ mod remote_input {
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_MIDDLEDOWN,
         MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSE_EVENT_FLAGS,
         MOUSEINPUT, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_SHIFT, BlockInput,
-        VIRTUAL_KEY, MapVirtualKeyW, MAPVK_VK_TO_VSC,
+        VIRTUAL_KEY, MapVirtualKeyW, MAPVK_VK_TO_VSC, VK_BACK, VK_TAB, VK_RETURN, VK_ESCAPE,
+        VK_SPACE, VK_PRIOR, VK_NEXT, VK_END, VK_HOME, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
+        VK_DELETE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10,
+        VK_F11, VK_F12, VK_OEM_PERIOD, VK_OEM_COMMA, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4,
+        VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_MINUS, VK_OEM_PLUS, VK_CAPITAL, VK_INSERT,
+        VK_NUMLOCK, VK_SCROLL, VK_PAUSE,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -229,12 +234,16 @@ mod remote_input {
 
         // BlockInput blocks physical mouse/keyboard from the local user (but still allows SendInput).
         unsafe {
-            let _ = BlockInput(active);
+            let result = BlockInput(active);
+            if result.is_ok() {
+                info!("[remote_input] BlockInput({}) SUCCESS", active);
+            } else {
+                warn!("[remote_input] BlockInput({}) FAILED (likely lack of admin privileges)", active);
+            }
         }
 
         if !active {
             release_all_locked();
-            unsafe { let _ = BlockInput(false); }
         }
     }
 
@@ -244,9 +253,65 @@ mod remote_input {
             "SHIFTLEFT" | "SHIFTRIGHT" => Some(VK_SHIFT.0),
             "CONTROLLEFT" | "CONTROLRIGHT" => Some(VK_CONTROL.0),
             "ALTLEFT" | "ALTRIGHT" => Some(VK_MENU.0),
+            "BACKSPACE" => Some(VK_BACK.0),
+            "TAB" => Some(VK_TAB.0),
+            "ENTER" => Some(VK_RETURN.0),
+            "ESCAPE" => Some(VK_ESCAPE.0),
+            "SPACE" => Some(VK_SPACE.0),
+            "PAGEUP" => Some(VK_PRIOR.0),
+            "PAGEDOWN" => Some(VK_NEXT.0),
+            "END" => Some(VK_END.0),
+            "HOME" => Some(VK_HOME.0),
+            "ARROWLEFT" => Some(VK_LEFT.0),
+            "ARROWUP" => Some(VK_UP.0),
+            "ARROWRIGHT" => Some(VK_RIGHT.0),
+            "ARROWDOWN" => Some(VK_DOWN.0),
+            "DELETE" => Some(VK_DELETE.0),
+            "F1" => Some(VK_F1.0),
+            "F2" => Some(VK_F2.0),
+            "F3" => Some(VK_F3.0),
+            "F4" => Some(VK_F4.0),
+            "F5" => Some(VK_F5.0),
+            "F6" => Some(VK_F6.0),
+            "F7" => Some(VK_F7.0),
+            "F8" => Some(VK_F8.0),
+            "F9" => Some(VK_F9.0),
+            "F10" => Some(VK_F10.0),
+            "F11" => Some(VK_F11.0),
+            "F12" => Some(VK_F12.0),
+            "CAPSLOCK" => Some(VK_CAPITAL.0),
+            "INSERT" => Some(VK_INSERT.0),
+            "NUMLOCK" => Some(VK_NUMLOCK.0),
+            "SCROLLLOCK" => Some(VK_SCROLL.0),
+            "PAUSE" => Some(VK_PAUSE.0),
             _ => {
-                let k = if key.len() == 1 { key.chars().next()?.to_ascii_uppercase() as u16 } else { 0 };
-                if k >= 0x30 && k <= 0x5A { Some(k) } else { None }
+                let k = if key.len() == 1 {
+                    key.chars().next()?.to_ascii_uppercase() as u16
+                } else {
+                    0
+                };
+                if (k >= 0x30 && k <= 0x39) || (k >= 0x41 && k <= 0x5A) {
+                    Some(k)
+                } else if k != 0 {
+                    // Map common symbols
+                    match k as u8 {
+                        b' ' => Some(VK_SPACE.0),
+                        b'.' => Some(VK_OEM_PERIOD.0),
+                        b',' => Some(VK_OEM_COMMA.0),
+                        b';' => Some(VK_OEM_1.0),
+                        b'/' => Some(VK_OEM_2.0),
+                        b'`' => Some(VK_OEM_3.0),
+                        b'[' => Some(VK_OEM_4.0),
+                        b'\\' => Some(VK_OEM_5.0),
+                        b']' => Some(VK_OEM_6.0),
+                        b'\'' => Some(VK_OEM_7.0),
+                        b'-' => Some(VK_OEM_MINUS.0),
+                        b'=' => Some(VK_OEM_PLUS.0),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
             }
         }
     }
