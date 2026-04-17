@@ -20,6 +20,8 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use log::{info, error, warn, debug};
 
+mod fallback_webrtc;
+
 static LAST_INPUT_TS: AtomicI64 = AtomicI64::new(0);
 
 // ─── Shared HTTP Client ──────────────────────────────────────────────────────
@@ -1059,9 +1061,10 @@ pub fn run() {
                                                     info!("[LiveKit] Capture task stopped");
                                                 });
 
-                                                // 4. WAIT FOR DEACTIVATION (checked every 10s)
+                                                // 4. WAIT FOR DEACTIVATION (reactive wait)
                                                 while status_rx.borrow().active {
-                                                    tokio::time::sleep(Duration::from_secs(10)).await;
+                                                    // This will wait up to 10s, or return immediately if status_rx changes
+                                                    let _ = tokio::time::timeout(Duration::from_secs(10), status_rx.changed()).await;
                                                 }
 
                                                 info!("[LiveKit] ⏹ Deactivating. Closing room...");
@@ -1074,7 +1077,13 @@ pub fn run() {
                                             Err(e) => error!("[LiveKit] ❌ Failed to publish track: {:?}", e),
                                         }
                                     }
-                                    Err(e) => error!("[LiveKit] Connection failed: {}", e),
+                                    Err(e) => {
+                                        error!("[LiveKit] Connection failed: {}. Starting WebRTC fallback...", e);
+                                        let uname = TRACKING_STATE.get().unwrap().lock().unwrap().username.clone();
+                                        tauri::async_runtime::spawn(async move {
+                                            fallback_webrtc::start_fallback_webrtc(uname).await;
+                                        });
+                                    }
                                 }
                             }
                         }
