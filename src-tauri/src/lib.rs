@@ -13,14 +13,10 @@ use screenshots::Screen;
 use base64::{engine::general_purpose, Engine as _};
 use image::{codecs::jpeg::JpegEncoder, ColorType};
 
-// LiveKit imports
-use livekit::prelude::*;
-use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
-use livekit::webrtc::video_source::native::NativeVideoSource;
-use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
-use log::{info, error, warn, debug};
+use log::{info, error};
 
-mod fallback_webrtc;
+mod p2p_webrtc;
+mod supabase_signaling;
 
 static LAST_INPUT_TS: AtomicI64 = AtomicI64::new(0);
 
@@ -51,72 +47,9 @@ struct TrackingState {
 static TRACKING_STATE: OnceLock<Arc<Mutex<TrackingState>>> = OnceLock::new();
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
-#[inline]
-fn put_rgba_pixel(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
-    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
-        return;
-    }
-    let idx = ((y as u32 * width + x as u32) * 4) as usize;
-    if idx + 3 >= rgba.len() {
-        return;
-    }
-    rgba[idx] = color[0];
-    rgba[idx + 1] = color[1];
-    rgba[idx + 2] = color[2];
-    rgba[idx + 3] = color[3];
-}
-
-#[inline]
-fn draw_cursor_on_frame(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32) {
-    // Realistic arrow-like pointer (shadow + black stroke + white fill).
-    // This is intentionally simple/fast because it runs every frame.
-    let cursor_h = 24i32;
-    let cursor_w = 16i32;
-
-    // Shadow
-    for dy in 0..cursor_h {
-        let row_w = ((dy as f32 / cursor_h as f32) * cursor_w as f32).max(1.0) as i32;
-        for dx in 0..=row_w {
-            put_rgba_pixel(
-                rgba,
-                width,
-                height,
-                x + dx + 2,
-                y + dy + 2,
-                [0, 0, 0, 110],
-            );
-        }
-    }
-
-    // Black outline
-    for dy in 0..cursor_h {
-        let row_w = ((dy as f32 / cursor_h as f32) * cursor_w as f32).max(1.0) as i32;
-        put_rgba_pixel(rgba, width, height, x, y + dy, [0, 0, 0, 255]);
-        put_rgba_pixel(rgba, width, height, x + row_w, y + dy, [0, 0, 0, 255]);
-    }
-    for dx in 0..cursor_w {
-        put_rgba_pixel(rgba, width, height, x + dx, y, [0, 0, 0, 255]);
-    }
-    put_rgba_pixel(rgba, width, height, x + 3, y + 18, [0, 0, 0, 255]);
-    put_rgba_pixel(rgba, width, height, x + 4, y + 19, [0, 0, 0, 255]);
-    put_rgba_pixel(rgba, width, height, x + 5, y + 20, [0, 0, 0, 255]);
-
-    // White fill
-    for dy in 1..cursor_h - 1 {
-        let row_w = ((dy as f32 / cursor_h as f32) * cursor_w as f32).max(1.0) as i32;
-        for dx in 1..row_w {
-            put_rgba_pixel(rgba, width, height, x + dx, y + dy, [245, 245, 245, 255]);
-        }
-    }
-
-    // Small inner gray detail near the tail for realism
-    put_rgba_pixel(rgba, width, height, x + 4, y + 17, [170, 170, 170, 255]);
-    put_rgba_pixel(rgba, width, height, x + 5, y + 18, [170, 170, 170, 255]);
-}
-
 #[derive(Deserialize, Debug)]
 #[serde(tag = "t")]
-enum RemoteControlCommand {
+pub(crate) enum RemoteControlCommand {
     #[serde(rename = "mouseMove")]
     MouseMove { x: f32, y: f32 },
     #[serde(rename = "mouseDown")]
@@ -132,7 +65,7 @@ enum RemoteControlCommand {
 }
 
 #[cfg(target_os = "windows")]
-mod remote_input {
+pub(crate) mod remote_input {
     use super::RemoteControlCommand;
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -224,6 +157,10 @@ mod remote_input {
             let flag = match b { 2 => MOUSEEVENTF_RIGHTUP, 1 => MOUSEEVENTF_MIDDLEUP, _ => MOUSEEVENTF_LEFTUP };
             send_mouse(flag, 0, 0, 0);
         }
+    }
+
+    pub fn is_control_active() -> bool {
+        state().lock().unwrap().control_active
     }
 
     pub fn set_control_active(active: bool) {
@@ -320,6 +257,9 @@ mod remote_input {
     }
 
     pub fn execute(cmd: RemoteControlCommand) {
+        if !is_control_active() {
+            return;
+        }
         match cmd {
             RemoteControlCommand::MouseMove { x, y } => {
                 let (ax, ay) = to_abs_coords(x, y);
@@ -610,6 +550,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Info)
             .targets([
                 Target::new(TargetKind::Stdout),
                 Target::new(TargetKind::LogDir { file_name: Some("cus-monitor.log".to_string()) }), // Corrected type to Option<String>
@@ -807,25 +748,20 @@ pub fn run() {
                 }
             });
 
-            // ─── Live Stream Room Logic (LiveKit) ──────────────────────────────
+            // ─── P2P WebRTC Stream Logic (Supabase Signaling) ──────────────────
             tauri::async_runtime::spawn(async move {
-                #[derive(Clone, Debug)]
-                struct StreamStatus {
-                    active: bool,
-                    control_enabled: bool,
-                    controller_id: String,
-                }
-
-                let (status_tx, mut status_rx) = tokio::sync::watch::channel(StreamStatus {
-                    active: false,
-                    control_enabled: false,
-                    controller_id: String::new(),
-                });
+                let (status_tx, mut status_rx) = tokio::sync::watch::channel(
+                    p2p_webrtc::StreamStatus {
+                        active: false,
+                        control_enabled: false,
+                        controller_id: String::new(),
+                    },
+                );
                 let poll_tx = status_tx.clone();
 
                 // 1. Status Polling Task (fast, 1s interval so control release feels instant)
                 tauri::async_runtime::spawn(async move {
-                    info!("[LiveKit] Polling task started (1s interval)");
+                    info!("[P2P] Polling task started (1s interval)");
                     let mut last_control_enabled = false;
                     loop {
                         let (_uid, uname) = if let Some(s) = TRACKING_STATE.get() {
@@ -845,7 +781,7 @@ pub fn run() {
                         };
 
                         let status_url = format!(
-                            "https://app.custech.co/api/stream?action=status&userId={}",
+                            "http://localhost:3000/api/stream?action=status&userId={}",
                             uname
                         );
 
@@ -857,13 +793,10 @@ pub fn run() {
                         {
                             Ok(res) => {
                                 if let Ok(json) = res.json::<serde_json::Value>().await {
-                                    // Livestream must not be blocked by productivity/inactivity heuristics.
-                                    // Server decides whether stream is toggled on; "PC active" is reported separately.
                                     let active = json.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false);
                                     let control_enabled = json.get("controlEnabled").and_then(|v| v.as_bool()).unwrap_or(false);
                                     let controller_id = json.get("controllerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-                                    // Apply local input lock/unlock immediately on poll changes.
                                     #[cfg(target_os = "windows")]
                                     {
                                         if control_enabled != last_control_enabled {
@@ -872,10 +805,14 @@ pub fn run() {
                                         }
                                     }
 
-                                    let _ = poll_tx.send(StreamStatus { active, control_enabled, controller_id });
+                                    let _ = poll_tx.send(p2p_webrtc::StreamStatus {
+                                        active,
+                                        control_enabled,
+                                        controller_id,
+                                    });
                                 }
                             }
-                            Err(e) => error!("[LiveKit] Status poll error: {}", e),
+                            Err(e) => error!("[P2P] Status poll error: {}", e),
                         }
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
@@ -883,211 +820,51 @@ pub fn run() {
 
                 // 2. Stream Controller Task
                 loop {
-                    // Wait for isActive to become true
                     if !status_rx.borrow().active {
-                        if let Err(_) = status_rx.changed().await { break; }
-                        if !status_rx.borrow().active { continue; }
+                        if status_rx.changed().await.is_err() {
+                            break;
+                        }
+                        if !status_rx.borrow().active {
+                            continue;
+                        }
                     }
 
-                    // START STREAMING
                     let uname = if let Some(s) = TRACKING_STATE.get() {
                         s.lock().unwrap().username.clone()
                     } else {
                         whoami::username()
                     };
 
-                    info!("[LiveKit] 🚀 Activating stream for: {}", uname);
-
-                    let token_url = format!(
-                        "https://app.custech.co/api/stream/token?room=room_{}&identity=agent_{}&clientType=agent",
-                        uname, uname
-                    );
+                    info!("[P2P] Activating stream for: {}", uname);
 
                     let stream_client = CLIENT.get().unwrap().clone();
-                    if let Ok(res) = stream_client.get(&token_url).send().await {
-                        if let Ok(data) = res.json::<serde_json::Value>().await {
-                            let token = data["token"].as_str().unwrap_or_default();
-                            let url = data["url"].as_str().unwrap_or_default();
+                    // Prefer local dashboard when developing (matches status poll above).
+                    let config_url = "http://localhost:3000/api/stream/signaling-config";
 
-                            if !token.is_empty() && !url.is_empty() {
-                                match Room::connect(url, token, RoomOptions::default()).await {
-                                    Ok((room, mut events)) => {
-                                        info!("[LiveKit] ✅ Connected to room_v{}", uname);
-                                        
-                                        // 1. START EVENT LOOP IMMEDIATELY (Crucial for negotiation)
-                                        let evt_status_rx = status_tx.subscribe();
-                                        tauri::async_runtime::spawn(async move {
-                                            info!("[LiveKit] Room event task starting...");
-                                            info!("[LiveKit] Event task started");
-                                            while evt_status_rx.borrow().active {
-                                                match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
-                                                    Ok(Some(event)) => {
-                                                        match event {
-                                                            RoomEvent::DataReceived { payload, participant, topic, .. } => {
-                                                                // Only accept remote-control packets when server says control is enabled,
-                                                                // and only from the current controller (admin has priority).
-                                                                let st = evt_status_rx.borrow().clone();
-                                                                if !st.control_enabled {
-                                                                    continue;
-                                                                }
-                                                                if topic.as_deref().unwrap_or("") != "remote-control" {
-                                                                    continue;
-                                                                }
-                                                                let sender_identity = participant
-                                                                    .as_ref()
-                                                                    .map(|p| p.identity().to_string())
-                                                                    .unwrap_or_default();
-                                                                if !st.controller_id.is_empty() && sender_identity != st.controller_id {
-                                                                    continue;
-                                                                }
-
-                                                                let payload_str = String::from_utf8_lossy(&payload).to_string();
-                                                                match serde_json::from_str::<RemoteControlCommand>(&payload_str) {
-                                                                    Ok(cmd) => {
-                                                                        #[cfg(target_os = "windows")]
-                                                                        {
-                                                                            remote_input::execute(cmd);
-                                                                        }
-                                                                    }
-                                                                    Err(e) => warn!("[LiveKit] Invalid control command: {}", e),
-                                                                }
-                                                            }
-                                                            RoomEvent::TrackPublished { publication, participant } => {
-                                                                info!("[LiveKit] Event: Track Published! SID: {}, Participant: {}", publication.sid(), participant.identity());
-                                                            },
-                                                            RoomEvent::ParticipantConnected(participant) => {
-                                                                info!("[LiveKit] Event: Participant Connected: {}", participant.identity());
-                                                            },
-                                                            RoomEvent::Disconnected { reason } => {
-                                                                warn!("[LiveKit] Event: Disconnected from room: {:?}", reason);
-                                                            },
-                                                            _ => debug!("[LiveKit] Other Room Event: {:?}", event),
-                                                        }
-                                                    }
-                                                    Ok(None) => {
-                                                        info!("[LiveKit] Room event stream closed.");
-                                                        break;
-                                                    }
-                                                    Err(_) => {} // Timeout – check borrow() and loop
-                                                }
-                                            }
-                                            // Ensure we never leave the user input blocked if we exit this task.
-                                            #[cfg(target_os = "windows")]
-                                            {
-                                                remote_input::set_control_active(false);
-                                            }
-                                            info!("[LiveKit] Event task stopped");
-                                        });
-
-                                        // 2. Create source and publish track
-                                        // Prefer full-HD source for sharper remote readability.
-                                        let native_source = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
-                                        let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(native_source.clone()));
-                                        
-                                        info!("[LiveKit] Publishing video track...");
-                                        match room.local_participant().publish_track(LocalTrack::Video(track), Default::default()).await {
-                                            Ok(_) => {
-                                                info!("[LiveKit] 📡 Video track published!");
-
-                                                // 3. START CAPTURE LOOP
-                                                let cap_status_rx = status_tx.subscribe();
-                                                let cap_source = native_source.clone();
-                                                tauri::async_runtime::spawn(async move {
-                                                    info!("[LiveKit] Capture task started");
-                                                    let device_state = DeviceState::new();
-                                                    const TARGET_FRAME_MS: u64 = 33; // ~30 FPS
-                                                    while cap_status_rx.borrow().active {
-                                                        let start = Instant::now();
-
-                                                        if let Ok(screens) = Screen::all() {
-                                                            if let Some(screen) = screens.first() {
-                                                                if let Ok(img) = screen.capture() {
-                                                                    let orig_w = img.width();
-                                                                    let mut w = orig_w;
-                                                                    let mut h = img.height();
-                                                                    
-                                                                    // Ensure even dimensions for I420 consistency
-                                                                    if w % 2 != 0 { w -= 1; }
-                                                                    if h % 2 != 0 { h -= 1; }
-
-                                                                    let mut rgba = img.into_raw();
-                                                                    let mouse = device_state.get_mouse();
-                                                                    // For now, we assume the primary monitor starts at (0,0).
-                                                                    // Coordinates are safely clamped by put_rgba_pixel.
-                                                                    draw_cursor_on_frame(
-                                                                        &mut rgba,
-                                                                        w,
-                                                                        h,
-                                                                        mouse.coords.0,
-                                                                        mouse.coords.1,
-                                                                    );
-                                                                    let mut i420 = I420Buffer::new(w, h);
-                                                                    let (stride_y, stride_u, stride_v) = i420.strides();
-                                                                    let (data_y, data_u, data_v) = i420.data_mut();
-
-                                                                    let src_w = orig_w as usize;
-
-                                                                    for y in 0..h as usize {
-                                                                        for x in 0..w as usize {
-                                                                            let i = (y * src_w + x) * 4;
-                                                                            let r = rgba[i] as i32;
-                                                                            let g = rgba[i+1] as i32;
-                                                                            let b = rgba[i+2] as i32;
-
-                                                                            // Y = 0.299R + 0.587G + 0.114B (scaled by 256)
-                                                                            data_y[y * stride_y as usize + x] = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
-
-                                                                            if y % 2 == 0 && x % 2 == 0 {
-                                                                                // U = -0.169R - 0.331G + 0.500B + 128
-                                                                                data_u[(y/2) * stride_u as usize + (x/2)] = ((-43 * r - 84 * g + 127 * b + 32768) >> 8) as u8;
-                                                                                // V = 0.500R - 0.419G - 0.081B + 128
-                                                                                data_v[(y/2) * stride_v as usize + (x/2)] = ((127 * r - 106 * g - 21 * b + 32768) >> 8) as u8;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    cap_source.capture_frame(&VideoFrame {
-                                                                        timestamp_us: Utc::now().timestamp_micros(),
-                                                                        rotation: VideoRotation::VideoRotation0,
-                                                                        buffer: i420,
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                        let elapsed = start.elapsed();
-                                                        if elapsed < Duration::from_millis(TARGET_FRAME_MS) {
-                                                            tokio::time::sleep(Duration::from_millis(TARGET_FRAME_MS) - elapsed).await;
-                                                        }
-                                                    }
-                                                    info!("[LiveKit] Capture task stopped");
-                                                });
-
-                                                // 4. WAIT FOR DEACTIVATION (reactive wait)
-                                                while status_rx.borrow().active {
-                                                    // This will wait up to 10s, or return immediately if status_rx changes
-                                                    let _ = tokio::time::timeout(Duration::from_secs(10), status_rx.changed()).await;
-                                                }
-
-                                                info!("[LiveKit] ⏹ Deactivating. Closing room...");
-                                                #[cfg(target_os = "windows")]
-                                                {
-                                                    remote_input::set_control_active(false);
-                                                }
-                                                let _ = room.close().await;
-                                            }
-                                            Err(e) => error!("[LiveKit] ❌ Failed to publish track: {:?}", e),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("[LiveKit] Connection failed: {}. Starting WebRTC fallback...", e);
-                                        let uname = TRACKING_STATE.get().unwrap().lock().unwrap().username.clone();
-                                        tauri::async_runtime::spawn(async move {
-                                            fallback_webrtc::start_fallback_webrtc(uname).await;
-                                        });
-                                    }
-                                }
+                    match stream_client.get(config_url).send().await {
+                        Ok(res) => {
+                            if let Ok(config) = res.json::<p2p_webrtc::SignalingConfig>().await {
+                                let stream_status_rx = status_tx.subscribe();
+                                p2p_webrtc::run_p2p_streaming(
+                                    uname.clone(),
+                                    config.supabase_url,
+                                    config.supabase_anon_key,
+                                    stream_status_rx,
+                                )
+                                .await;
+                            } else {
+                                error!("[P2P] Failed to parse signaling config");
                             }
                         }
+                        Err(e) => error!("[P2P] Failed to fetch signaling config: {}", e),
                     }
+
+                    #[cfg(target_os = "windows")]
+                    {
+                        remote_input::set_control_active(false);
+                    }
+
+                    info!("[P2P] Stream session ended for {}", uname);
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
             });
