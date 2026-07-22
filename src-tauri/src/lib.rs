@@ -17,6 +17,8 @@ use log::{info, error};
 
 mod p2p_webrtc;
 mod supabase_signaling;
+mod user_state;
+mod watchdog;
 
 static LAST_INPUT_TS: AtomicI64 = AtomicI64::new(0);
 
@@ -435,7 +437,7 @@ mod win_tracker {
         }
 
         // 1. Emit log for the window that just lost focus (if it's not empty/noise)
-        if !state.last_title.is_empty() {
+        if watchdog::is_leader() && !state.last_title.is_empty() {
             let secs = now.signed_duration_since(state.start_time).num_seconds();
             if secs > 0 {
                 let log = ActivityLog {
@@ -516,6 +518,9 @@ fn greet(name: &str) -> String {
 
 #[tauri::command]
 fn set_active_user(user_id: String, username: Option<String>) {
+    let uname = username.clone().unwrap_or_default();
+    user_state::save(&user_id, &uname);
+
     if let Some(state_arc) = TRACKING_STATE.get() {
         let mut state = state_arc.lock().unwrap();
         state.user_id = user_id.clone();
@@ -531,8 +536,39 @@ fn set_active_user(user_id: String, username: Option<String>) {
 // ─── App entry point ──────────────────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<String> = std::env::args().collect();
+    let preferred_sibling = watchdog::parse_sibling_arg(&args);
+    let start_minimized = watchdog::is_minimized_arg(&args);
+
+    // Fresh user/autostart launch: clear a stale uninstall lock from a failed uninstall.
+    if preferred_sibling.is_none() {
+        let _ = std::fs::remove_file(watchdog::uninstall_lock_path());
+    }
+
+    // Triple-sibling claim: exit if the requested/available slot is taken.
+    let Some(my_sibling) = watchdog::claim_sibling(preferred_sibling) else {
+        info!("[watchdog] no free sibling slot — exiting");
+        return;
+    };
+    watchdog::start(my_sibling);
+
     // Use whoami for more reliable username detection in production/admin environments
-    let user_id = whoami::username();
+    let mut user_id = whoami::username();
+    let mut username = user_id.clone();
+    if let Some(persisted) = user_state::load() {
+        if !persisted.user_id.is_empty() {
+            user_id = persisted.user_id;
+            username = if persisted.username.is_empty() {
+                user_id.clone()
+            } else {
+                persisted.username
+            };
+            info!(
+                "[user_state] restored user_id={} username={}",
+                user_id, username
+            );
+        }
+    }
     LAST_INPUT_TS.store(Utc::now().timestamp(), Ordering::Relaxed);
 
     let tracking_state = Arc::new(Mutex::new(TrackingState {
@@ -540,7 +576,7 @@ pub fn run() {
         last_app: String::new(),
         start_time: Utc::now(),
         user_id: user_id.clone(),
-        username: user_id, // Default to OS username; overridden by set_active_user after login
+        username,
     }));
 
     // Store in global so the static hook callback can reach it
@@ -557,14 +593,7 @@ pub fn run() {
                 Target::new(TargetKind::Webview),
             ])
             .build())
-        // Single-instance guard
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.unminimize();
-            }
-        }))
+        // Note: single-instance plugin intentionally omitted so 3 siblings can run.
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
@@ -574,36 +603,50 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![greet, set_active_user])
-        .setup(|app| {
-            // Taskkill sidecar is removed as we no longer use it
-
+        .setup(move |app| {
             // Store AppHandle and Client globally (with User-Agent for WAF compatibility)
             APP_HANDLE.set(app.handle().clone()).ok();
             CLIENT.set(Client::builder().user_agent("CUS-Monitor-App").build().unwrap()).ok();
 
-            // Force autostart to be enabled every time the app starts
-            let _ = app.handle().autolaunch().enable();
+            // Hide UI for watchdog siblings / minimized launches
+            if my_sibling != 0 || start_minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
-            // Silent auto-updater
+            // Only sibling 0 manages autostart registration
+            if my_sibling == 0 {
+                let _ = app.handle().autolaunch().enable();
+            }
+
+            // Silent auto-updater (leader only)
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Ok(Some(update)) = handle
-                    .updater()
-                    .expect("failed to get updater")
-                    .check()
-                    .await
-                {
-                    let _ = update.download_and_install(|_cl, _tl| {}, || {}).await;
-                    // Don't restart in the user's face. Wait until the PC is idle,
-                    // then relaunch into the updated version.
-                    loop {
-                        let last_input = LAST_INPUT_TS.load(Ordering::Relaxed);
-                        let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
-                        if idle_seconds >= 300 {
-                            let _ = handle.restart();
-                        }
+                loop {
+                    if !watchdog::is_leader() {
                         tokio::time::sleep(Duration::from_secs(30)).await;
+                        continue;
                     }
+                    if let Ok(Some(update)) = handle
+                        .updater()
+                        .expect("failed to get updater")
+                        .check()
+                        .await
+                    {
+                        let _ = update.download_and_install(|_cl, _tl| {}, || {}).await;
+                        // Don't restart in the user's face. Wait until the PC is idle,
+                        // then relaunch into the updated version.
+                        loop {
+                            let last_input = LAST_INPUT_TS.load(Ordering::Relaxed);
+                            let idle_seconds = (Utc::now().timestamp() - last_input).max(0);
+                            if idle_seconds >= 300 {
+                                let _ = handle.restart();
+                            }
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
                 }
             });
 
@@ -611,7 +654,7 @@ pub fn run() {
             // Runs every 1 s, classifies each second as productive/unproductive
             // based on keyboard/mouse activity, then emits heartbeat every 120 s.
             let heartbeat_handle = app.handle().clone();
-            let hb_user_id = whoami::username();
+            let hb_user_id = user_id.clone();
             let session_id = format!("session-{}", Utc::now().timestamp());
 
             tauri::async_runtime::spawn(async move {
@@ -627,6 +670,14 @@ pub fn run() {
 
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    if !watchdog::is_leader() {
+                        // Reset accumulators while following so a takeover starts clean.
+                        productive_acc = 0;
+                        unproductive_acc = 0;
+                        last_heartbeat = Instant::now();
+                        continue;
+                    }
 
                     // Check system-wide input (keyboard + mouse movement/clicks)
                     let keys  = device_state.get_keys();
@@ -764,6 +815,23 @@ pub fn run() {
                     info!("[P2P] Polling task started (1s interval)");
                     let mut last_control_enabled = false;
                     loop {
+                        if !watchdog::is_leader() {
+                            #[cfg(target_os = "windows")]
+                            {
+                                if last_control_enabled {
+                                    remote_input::set_control_active(false);
+                                    last_control_enabled = false;
+                                }
+                            }
+                            let _ = poll_tx.send(p2p_webrtc::StreamStatus {
+                                active: false,
+                                control_enabled: false,
+                                controller_id: String::new(),
+                            });
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+
                         let (_uid, uname) = if let Some(s) = TRACKING_STATE.get() {
                             let state = s.lock().unwrap();
                             (state.user_id.clone(), state.username.clone())
@@ -781,7 +849,7 @@ pub fn run() {
                         };
 
                         let status_url = format!(
-                            "http://localhost:3000/api/stream?action=status&userId={}",
+                            "https://app.custech.co/api/stream?action=status&userId={}",
                             uname
                         );
 
@@ -829,6 +897,11 @@ pub fn run() {
                         }
                     }
 
+                    if !watchdog::is_leader() {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+
                     let uname = if let Some(s) = TRACKING_STATE.get() {
                         s.lock().unwrap().username.clone()
                     } else {
@@ -838,8 +911,7 @@ pub fn run() {
                     info!("[P2P] Activating stream for: {}", uname);
 
                     let stream_client = CLIENT.get().unwrap().clone();
-                    // Prefer local dashboard when developing (matches status poll above).
-                    let config_url = "http://localhost:3000/api/stream/signaling-config";
+                    let config_url = "https://app.custech.co/api/stream/signaling-config";
 
                     match stream_client.get(config_url).send().await {
                         Ok(res) => {
@@ -888,6 +960,9 @@ pub fn run() {
         .run(move |handle, event| {
             // Flush the last open window on clean exit
             if let RunEvent::Exit = event {
+                if !watchdog::is_leader() {
+                    return;
+                }
                 let s = state_for_exit.lock().unwrap();
                 if !s.last_title.is_empty() {
                     let secs =

@@ -211,8 +211,13 @@ async fn handle_request_stream_inner(
     admin_id: &str,
     signaling: Arc<SupabaseSignaling>,
     state: Arc<RwLock<P2PState>>,
-    _stream_status: StreamStatus,
+    stream_status: StreamStatus,
 ) -> Result<(), String> {
+    info!(
+        "[P2P] Building peer for admin {} (control_enabled={}, controller_id={})",
+        admin_id, stream_status.control_enabled, stream_status.controller_id
+    );
+
     let mut m = MediaEngine::default();
     m.register_default_codecs()
         .map_err(|e| format!("codec registration: {}", e))?;
