@@ -547,7 +547,27 @@ pub fn run() {
 
     // Triple-sibling claim: exit if the requested/available slot is taken.
     let Some(my_sibling) = watchdog::claim_sibling(preferred_sibling) else {
-        info!("[watchdog] no free sibling slot — exiting");
+        // All 3 slots already held (another install/dev instance is running).
+        eprintln!(
+            "[watchdog] no free sibling slot — another CUS Monitor is already running. Exiting."
+        );
+        #[cfg(target_os = "windows")]
+        {
+            use windows::core::HSTRING;
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+            unsafe {
+                let _ = MessageBoxW(
+                    None,
+                    &HSTRING::from(
+                        "CUS Monitor is already running in the background.\n\n\
+                         If you are developing, stop the other cus-monitor.exe processes \
+                         (or the installed app) and try again.",
+                    ),
+                    &HSTRING::from("CUS Monitor"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        }
         return;
     };
     watchdog::start(my_sibling);

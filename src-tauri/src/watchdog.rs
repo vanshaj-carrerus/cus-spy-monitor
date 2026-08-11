@@ -65,12 +65,22 @@ pub fn is_leader() -> bool {
     IS_LEADER.load(Ordering::Relaxed)
 }
 
-fn sibling_mutex_name(id: u8) -> String {
-    format!("Local\\CUSMonitor_Sibling_{}", id)
+fn mutex_prefix() -> &'static str {
+    // Keep debug builds from colliding with the installed production app
+    // (same mutex names would make `tauri dev` exit immediately).
+    if cfg!(debug_assertions) {
+        "Local\\CUSMonitorDev_"
+    } else {
+        "Local\\CUSMonitor_"
+    }
 }
 
-fn leader_mutex_name() -> &'static str {
-    "Local\\CUSMonitor_Leader_v1"
+fn sibling_mutex_name(id: u8) -> String {
+    format!("{}Sibling_{}", mutex_prefix(), id)
+}
+
+fn leader_mutex_name() -> String {
+    format!("{}Leader_v1", mutex_prefix())
 }
 
 #[cfg(target_os = "windows")]
@@ -222,7 +232,7 @@ fn try_acquire_leadership() {
         if IS_LEADER.load(Ordering::Relaxed) {
             return;
         }
-        if let Some(handle) = try_create_mutex(leader_mutex_name()) {
+        if let Some(handle) = try_create_mutex(&leader_mutex_name()) {
             let _ = LEADER_HANDLE.set(MutexGuard(handle));
             IS_LEADER.store(true, Ordering::Relaxed);
             info!("[watchdog] sibling {} became LEADER", sibling_id());
