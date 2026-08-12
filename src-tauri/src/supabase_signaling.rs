@@ -54,6 +54,7 @@ impl SupabaseSignaling {
         let (joined_tx, joined_rx) = oneshot::channel::<Result<(), String>>();
         let mut joined_tx = Some(joined_tx);
 
+
         let join_msg = json!([
             join_ref,
             join_ref,
@@ -62,13 +63,13 @@ impl SupabaseSignaling {
             {
                 "config": {
                     "broadcast": { "ack": false, "self": false },
-                    "presence": { "key": "", "enabled": false },
-                    "postgres_changes": [],
-                    "private": false
+                    "presence": { "key": "" },
+                    "postgres_changes": []
                 },
                 "access_token": anon_key
             }
         ]);
+
         write_tx
             .send(join_msg.to_string())
             .await

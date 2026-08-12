@@ -16,7 +16,7 @@ use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, GetL
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, MUTEX_MODIFY_STATE};
 
-pub const SIBLING_COUNT: u8 = 3;
+pub const SIBLING_COUNT: u8 = 1;
 const UNINSTALL_LOCK_NAME: &str = "uninstall.lock";
 
 static SIBLING_ID: AtomicU8 = AtomicU8::new(0);
