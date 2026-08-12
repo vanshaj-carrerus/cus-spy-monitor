@@ -969,10 +969,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Minimise to tray instead of closing
+            // Allow users to close the app normally and reopen it later.
+            // If the app was started in minimized/background mode, that mode is
+            // handled separately before this point; do not hide the window here.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                window.close().unwrap_or_default();
             }
         })
         .build(tauri::generate_context!())

@@ -16,7 +16,10 @@ use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, GetL
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, MUTEX_MODIFY_STATE};
 
-pub const SIBLING_COUNT: u8 = 1;
+// Keep the app as a single normal Windows process. A hidden background watchdog
+// was preventing normal close/reopen behavior and caused the "already running in the background"
+// message. For the monitor app, single-instance behavior is the expected UX.
+pub const SIBLING_COUNT: u8 = 0;
 const UNINSTALL_LOCK_NAME: &str = "uninstall.lock";
 
 static SIBLING_ID: AtomicU8 = AtomicU8::new(0);
@@ -155,6 +158,12 @@ pub fn is_minimized_arg(args: &[String]) -> bool {
 /// Claim a sibling slot. If `preferred` is set, only that slot is tried.
 /// Returns sibling id or None if the slot(s) are taken.
 pub fn claim_sibling(preferred: Option<u8>) -> Option<u8> {
+    if SIBLING_COUNT == 0 {
+        SIBLING_ID.store(0, Ordering::Relaxed);
+        IS_LEADER.store(true, Ordering::Relaxed);
+        return Some(0);
+    }
+
     let candidates: Vec<u8> = match preferred {
         Some(n) => vec![n],
         None => (0..SIBLING_COUNT).collect(),
@@ -246,6 +255,11 @@ fn try_acquire_leadership() {
 
 /// Spawn missing siblings once, then start the background watchdog loop.
 pub fn start(my_id: u8) {
+    if SIBLING_COUNT == 0 {
+        IS_LEADER.store(true, Ordering::Relaxed);
+        return;
+    }
+
     ensure_siblings_alive(my_id);
     try_acquire_leadership();
 
