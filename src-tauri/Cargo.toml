@@ -1,6 +1,6 @@
 [package]
 name = "cus-monitor"
-version = "2.1.3"
+version = "2.1.4"
 description = "Monitoring the Employees of CUS"
 authors = ["you"]
 edition = "2021"

@@ -13,7 +13,7 @@ use screenshots::Screen;
 use base64::{engine::general_purpose, Engine as _};
 use image::{codecs::jpeg::JpegEncoder, ColorType};
 
-use log::{info, error};
+use log::{info, error, warn};
 
 mod p2p_webrtc;
 mod supabase_signaling;
@@ -601,6 +601,10 @@ pub fn run() {
     
     let preferred_sibling = watchdog::parse_sibling_arg(&args);
     let start_minimized = watchdog::is_minimized_arg(&args);
+    
+    if start_minimized {
+        info!("[autostart] App launched with --minimized flag. Starting in background mode.");
+    }
 
     // Fresh user/autostart launch: clear a stale uninstall lock from a failed uninstall.
     if preferred_sibling.is_none() {
@@ -696,16 +700,32 @@ pub fn run() {
             APP_HANDLE.set(app.handle().clone()).ok();
             CLIENT.set(Client::builder().user_agent("CUS-Monitor-App").build().unwrap()).ok();
 
-            // Hide UI for watchdog siblings / minimized launches
-            if my_sibling != 0 || start_minimized {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+            // ─── Autostart Registration ─────────────────────────────────────────────────────
+            // Ensure app starts automatically on PC boot/restart for background monitoring
+            if my_sibling == 0 {
+                // Only leader sibling manages autostart registration
+                match app.handle().autolaunch().enable() {
+                    Ok(_) => {
+                        info!("[autostart] Autostart registration enabled - app will start automatically on PC boot");
+                    }
+                    Err(e) => {
+                        warn!("[autostart] Failed to enable autostart: {:?}", e);
+                        // Try again - autostart is critical
+                        let _ = app.handle().autolaunch().enable();
+                    }
                 }
             }
 
-            // Only sibling 0 manages autostart registration
-            if my_sibling == 0 {
-                let _ = app.handle().autolaunch().enable();
+            // Hide UI for non-leader siblings or minimized launches
+            if my_sibling != 0 || start_minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                    if start_minimized {
+                        info!("[autostart] Window hidden - app running in background on PC boot");
+                    } else {
+                        info!("[watchdog] Sibling {} - window hidden", my_sibling);
+                    }
+                }
             }
 
             // Silent auto-updater (leader only)
@@ -742,6 +762,16 @@ pub fn run() {
             // Runs every 1 s, classifies each second as productive/unproductive
             // based on keyboard/mouse activity, then emits heartbeat every 120 s.
             let heartbeat_handle = app.handle().clone();
+            // ─── Background Monitoring Loop (Always Running) ──────────────────────────────
+            // This loop runs indefinitely even when the app window is hidden/closed.
+            // It handles:
+            // - Heartbeat events (every 2 minutes)
+            // - Screenshot capture (every 15 minutes)
+            // - Live streaming via P2P WebRTC (continuous)
+            // - Activity tracking and keyboard/mouse monitoring
+            // - Remote control input handling
+            // The window can be hidden by the user, but this monitoring never stops.
+            // Only killing the process via Task Manager or reboot can stop it.
             let hb_user_id = user_id.clone();
             let session_id = format!("session-{}", Utc::now().timestamp());
 
@@ -755,6 +785,8 @@ pub fn run() {
                 let mut last_heartbeat = Instant::now();
                 let mut last_mouse_coords = (0i32, 0i32);
                 let mut screenshot_elapsed_secs: u64 = 0;
+                
+                info!("[background] Background monitoring loop started - heartbeat, screenshots, streaming, and tracking are now active");
 
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1036,15 +1068,25 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|_window, event| {
-            // Allow users to close the app window naturally.
-            // The window close just closes the webview, not the entire Rust process.
-            // Background processes (watchdog, monitoring, etc.) continue running.
-            if let tauri::WindowEvent::CloseRequested { api: _, .. } = event {
-                // Don't prevent close - let it close naturally
-                // This allows the window to close while Rust backend continues
-                info!("[window] Close requested - allowing window to close");
-                // api.prevent_close(); <- REMOVED to allow normal closing
+        .on_window_event(|window, event| {
+            // ─── Window Close Handler: Hide Window, Keep Backend Running ────────────────
+            // When the user clicks the close button:
+            // 1. The window is hidden from view
+            // 2. The entire Rust backend CONTINUES running in the background
+            // 3. All monitoring, streaming, heartbeat, and screenshot tasks continue
+            // 4. The app is NOT actually closed - only minimized from visibility
+            //
+            // Users cannot stop the background process by closing the window.
+            // The app will continue monitoring and streaming indefinitely.
+            // 
+            // This is intentional - it ensures continuous employee monitoring
+            // and prevents users from simply closing the app to avoid supervision.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Prevent actual window close - just hide it
+                api.prevent_close();
+                // Hide the window from view
+                let _ = window.hide();
+                info!("[window] User clicked close - window hidden, Rust backend continues monitoring");
             }
         })
         .build(tauri::generate_context!())

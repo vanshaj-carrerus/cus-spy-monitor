@@ -105,7 +105,8 @@ function App() {
     }
   }, []);
 
-  // Setup window close event handler
+  // Setup window close event handler - hide window instead of closing
+  // When user closes the app, the window hides but Rust backend continues monitoring
   useEffect(() => {
     let unlistenCloseRequested: (() => void) | undefined;
 
@@ -113,17 +114,25 @@ function App() {
       try {
         // Listen for window close request from the close button
         unlistenCloseRequested = await listen<string>('tauri://close-requested', async () => {
-          console.log('[App] Window close requested - gracefully closing...');
+          console.log('[App] Window close requested - hiding window (Rust backend continues monitoring, streaming, heartbeat, screenshots)');
           try {
-            // Close the webview window (Rust backend continues running)
-            await getCurrentWindow().close();
+            // Hide the window instead of closing
+            // Rust backend continues running in the background with:
+            // - Live streaming via WebRTC
+            // - Heartbeat events (every 2 minutes)
+            // - Screenshots (every 15 minutes)
+            // - Activity tracking
+            // - Remote control input handling
+            // Users cannot stop these by closing the window - only via Task Manager
+            const appWindow = getCurrentWindow();
+            await appWindow.hide();
+            console.log('[App] Window hidden - app running in background with full monitoring capabilities');
           } catch (err) {
-            console.error('[App] Error closing window:', err);
-            // If close fails, let Rust handle the exit
+            console.error('[App] Error hiding window:', err);
           }
         });
         
-        console.log('[App] Window close handler registered');
+        console.log('[App] Window close handler registered - will hide window instead of closing');
       } catch (err) {
         console.warn('[App] Could not setup close handler (normal in dev):', err);
       }
