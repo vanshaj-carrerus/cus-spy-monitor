@@ -49,6 +49,9 @@ struct TrackingState {
 static TRACKING_STATE: OnceLock<Arc<Mutex<TrackingState>>> = OnceLock::new();
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
+// Flag to indicate if app is running in uninstall auth mode
+static UNINSTALL_AUTH_MODE: OnceLock<bool> = OnceLock::new();
+
 #[derive(Deserialize, Debug)]
 #[serde(tag = "t")]
 pub(crate) enum RemoteControlCommand {
@@ -533,16 +536,81 @@ fn set_active_user(user_id: String, username: Option<String>) {
     }
 }
 
+// ─── Uninstall Authentication Commands ─────────────────────────────────────────
+#[tauri::command]
+fn is_uninstall_auth_mode() -> bool {
+    UNINSTALL_AUTH_MODE.get().copied().unwrap_or(false)
+}
+
+#[tauri::command]
+fn signal_uninstall_allowed() {
+    info!("[uninstall] User verified credentials successfully. Signaling uninstall allowed.");
+    // Exit with code 0 to signal success to installer
+    std::process::exit(0);
+}
+
+#[tauri::command]
+fn signal_uninstall_denied() {
+    info!("[uninstall] User cancelled or failed uninstall verification. Signaling uninstall denied.");
+    // Exit with code 1 to signal failure to installer
+    std::process::exit(1);
+}
+
+// ─── Uninstall Authentication Mode Runner ─────────────────────────────────────
+// Runs a minimal Tauri app with only the uninstall auth UI
+fn run_uninstall_auth_mode() {
+    info!("[uninstall] Initializing uninstall auth mode");
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Info)
+            .targets([
+                Target::new(TargetKind::Stdout),
+                Target::new(TargetKind::LogDir { file_name: Some("cus-monitor.log".to_string()) }),
+                Target::new(TargetKind::Webview),
+            ])
+            .build())
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![greet, set_active_user, is_uninstall_auth_mode, signal_uninstall_allowed, signal_uninstall_denied])
+        .setup(|app| {
+            APP_HANDLE.set(app.handle().clone()).ok();
+            CLIENT.set(Client::builder().user_agent("CUS-Monitor-App").build().unwrap()).ok();
+
+            info!("[uninstall] Tauri setup complete for uninstall auth mode");
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running uninstall auth app");
+
+    info!("[uninstall] Uninstall auth app exited");
+}
+
 // ─── App entry point ──────────────────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
+    
+    // Check for uninstall auth mode flag
+    let is_uninstall_mode = args.iter().any(|arg| arg == "--request-uninstall-auth");
+    UNINSTALL_AUTH_MODE.set(is_uninstall_mode).ok();
+    
+    if is_uninstall_mode {
+        info!("[uninstall] App launched with --request-uninstall-auth flag. Entering uninstall auth mode.");
+    }
+    
     let preferred_sibling = watchdog::parse_sibling_arg(&args);
     let start_minimized = watchdog::is_minimized_arg(&args);
 
     // Fresh user/autostart launch: clear a stale uninstall lock from a failed uninstall.
     if preferred_sibling.is_none() {
         let _ = std::fs::remove_file(watchdog::uninstall_lock_path());
+    }
+
+    // Skip sibling claiming if in uninstall auth mode (we're a temporary lightweight process)
+    if is_uninstall_mode {
+        info!("[uninstall] Skipping normal initialization (sibling claiming, watchdog, etc.)");
+        return run_uninstall_auth_mode();
     }
 
     // Triple-sibling claim: exit if the requested/available slot is taken.
@@ -622,7 +690,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![greet, set_active_user])
+        .invoke_handler(tauri::generate_handler![greet, set_active_user, is_uninstall_auth_mode, signal_uninstall_allowed, signal_uninstall_denied])
         .setup(move |app| {
             // Store AppHandle and Client globally (with User-Agent for WAF compatibility)
             APP_HANDLE.set(app.handle().clone()).ok();
@@ -968,13 +1036,15 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Allow users to close the app normally and reopen it later.
-            // If the app was started in minimized/background mode, that mode is
-            // handled separately before this point; do not hide the window here.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                window.close().unwrap_or_default();
+        .on_window_event(|_window, event| {
+            // Allow users to close the app window naturally.
+            // The window close just closes the webview, not the entire Rust process.
+            // Background processes (watchdog, monitoring, etc.) continue running.
+            if let tauri::WindowEvent::CloseRequested { api: _, .. } = event {
+                // Don't prevent close - let it close naturally
+                // This allows the window to close while Rust backend continues
+                info!("[window] Close requested - allowing window to close");
+                // api.prevent_close(); <- REMOVED to allow normal closing
             }
         })
         .build(tauri::generate_context!())
