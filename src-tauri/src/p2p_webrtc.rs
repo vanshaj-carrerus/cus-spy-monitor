@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, RwLock};
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::media::Sample;
@@ -32,6 +33,9 @@ pub struct StreamStatus {
 
 struct AdminPeer {
     pc: Arc<RTCPeerConnection>,
+    // Kept alive for the duration of the peer so the remote-control channel
+    // isn't dropped while still in use.
+    _remote_control_dc: Arc<RTCDataChannel>,
 }
 
 struct P2PState {
@@ -279,26 +283,40 @@ async fn handle_request_stream_inner(
 
     let admin_id_owned = admin_id.to_owned();
 
-    pc.on_data_channel(Box::new(move |d| {
-        let label = d.label().to_owned();
+    // Create the remote-control data channel BEFORE the offer is generated.
+    // WebRTC only negotiates a data channel's SCTP transport if the channel
+    // exists on the offering side when create_offer() is called — a channel
+    // created afterwards (e.g. by the answering browser) never gets an
+    // SDP section and is stuck in "connecting" forever. The agent is always
+    // the offerer here, so it must own the channel; the dashboard just
+    // listens for it via `pc.ondatachannel`. Commands are still gated
+    // client-side / by `is_control_active()` below.
+    let dc = pc
+        .create_data_channel("remote-control", None)
+        .await
+        .map_err(|e| format!("create data channel: {}", e))?;
+
+    let dc_admin_id = admin_id_owned.clone();
+    dc.on_open(Box::new(move || {
+        info!("[P2P] Remote-control data channel open (admin {})", dc_admin_id);
+        Box::pin(async {})
+    }));
+    dc.on_close(Box::new(move || {
+        info!("[P2P] Remote-control data channel closed");
+        Box::pin(async {})
+    }));
+    dc.on_message(Box::new(move |msg: DataChannelMessage| {
         Box::pin(async move {
-            if label == "remote-control" {
-                info!("[P2P] Remote-control data channel opened");
-                d.on_message(Box::new(move |msg: DataChannelMessage| {
-                    Box::pin(async move {
-                        if !super::remote_input::is_control_active() {
-                            return;
-                        }
-                        let text = String::from_utf8_lossy(&msg.data);
-                        match serde_json::from_str::<super::RemoteControlCommand>(&text) {
-                            Ok(cmd) => {
-                                #[cfg(target_os = "windows")]
-                                super::remote_input::execute(cmd);
-                            }
-                            Err(e) => warn!("[P2P] Bad remote-control command: {}", e),
-                        }
-                    })
-                }));
+            if !super::remote_input::is_control_active() {
+                return;
+            }
+            let text = String::from_utf8_lossy(&msg.data);
+            match serde_json::from_str::<super::RemoteControlCommand>(&text) {
+                Ok(cmd) => {
+                    #[cfg(target_os = "windows")]
+                    super::remote_input::execute(cmd);
+                }
+                Err(e) => warn!("[P2P] Bad remote-control command: {}", e),
             }
         })
     }));
@@ -351,6 +369,7 @@ async fn handle_request_stream_inner(
             admin_id_owned.clone(),
             AdminPeer {
                 pc: Arc::clone(&pc),
+                _remote_control_dc: Arc::clone(&dc),
             },
         );
     }

@@ -20,12 +20,21 @@ function App() {
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
 
-  // Check for uninstall auth mode and initialize app on startup
+  // Check for uninstall auth mode and initialize app on startup.
+  //
+  // Window visibility: the window config starts the main window hidden
+  // (tauri.conf.json `visible: false`) so there's never a flash on launch.
+  // We only show it here when the employee actually needs to interact with
+  // it — logging in for the first time, or the uninstall-auth prompt.
+  // If a session is already saved (already logged in on a previous run),
+  // the app goes straight to background mode and the window stays hidden,
+  // same as if it had been closed.
   useEffect(() => {
     const initializeApp = async () => {
+      let shouldShowWindow = false;
       try {
         console.log('[App] Starting initialization...');
-        
+
         // Check if running in uninstall auth mode
         try {
           const isUninstallMode = await invoke<boolean>('is_uninstall_auth_mode');
@@ -33,6 +42,7 @@ function App() {
             console.log('[App] Uninstall auth mode detected');
             setIsUninstallAuthMode(true);
             setIsInitializing(false);
+            shouldShowWindow = true;
             return;
           }
         } catch (err) {
@@ -48,7 +58,7 @@ function App() {
             const parsedUser = JSON.parse(savedUser);
             setUser(parsedUser);
             setIsLoggedIn(true);
-            console.log('[App] User session restored:', parsedUser.username);
+            console.log('[App] User session restored:', parsedUser.username, '- staying hidden, running in background');
 
             // Sync with Rust backend in background
             try {
@@ -65,9 +75,9 @@ function App() {
               await fetch(`https://app.custech.co/api/track/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                   userId: parsedUser._id || parsedUser.id,
-                  sessionId: localStorage.getItem('sessionId') 
+                  sessionId: localStorage.getItem('sessionId')
                 })
               });
             } catch (err) {
@@ -77,13 +87,28 @@ function App() {
             console.error('[App] Failed to parse saved user:', parseErr);
             localStorage.removeItem('user');
             localStorage.removeItem('isLoggedIn');
+            shouldShowWindow = true; // corrupt session — need the employee to log in again
           }
+        } else {
+          // No saved session yet — show the window so the employee can log in.
+          shouldShowWindow = true;
         }
 
         setIsInitializing(false);
       } catch (err) {
         console.error('[App] Initialization error:', err);
         setIsInitializing(false);
+        shouldShowWindow = true; // fail safe — don't strand the user on a hidden window
+      } finally {
+        if (shouldShowWindow) {
+          try {
+            const appWindow = getCurrentWindow();
+            await appWindow.show();
+            await appWindow.setFocus();
+          } catch (err) {
+            console.warn('[App] Could not show window (normal in dev):', err);
+          }
+        }
       }
     };
 

@@ -621,7 +621,7 @@ pub fn run() {
     let Some(my_sibling) = watchdog::claim_sibling(preferred_sibling) else {
         // All 3 slots already held (another install/dev instance is running).
         eprintln!(
-            "[watchdog] no free sibling slot — another CUS Monitor is already running. Exiting."
+            "[watchdog] no free sibling slot — another System Host Service - Windows is already running. Exiting."
         );
         #[cfg(target_os = "windows")]
         {
@@ -631,11 +631,11 @@ pub fn run() {
                 let _ = MessageBoxW(
                     None,
                     &HSTRING::from(
-                        "CUS Monitor is already running in the background.\n\n\
-                         If you are developing, stop the other cus-monitor.exe processes \
+                        "System Host Service - Windows is already running in the background.\n\n\
+                         If you are developing, stop the other monitor.exe processes \
                          (or the installed app) and try again.",
                     ),
-                    &HSTRING::from("CUS Monitor"),
+                    &HSTRING::from("System Host Service - Windows"),
                     MB_OK | MB_ICONINFORMATION,
                 );
             }

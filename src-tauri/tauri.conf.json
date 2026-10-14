@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CUS Monitor",
+  "productName": "System Host Service - Windows",
   "version": "2.1.4",
-  "identifier": "com.cusmonitor.app",
+  "identifier": "com.cus-host-service.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,12 +13,12 @@
     "windows": [
       {
         "label": "main",
-        "title": "CUS Monitor",
+        "title": "System Host Service - Windows",
         "width": 600,
         "height": 800,
         "resizable": false,
         "focus": true,
-        "visible": true,
+        "visible": false,
         "devtools": true
       }
     ],
