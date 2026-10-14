@@ -1255,39 +1255,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "system-host-service-windows"
-version = "2.0.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "device_query",
- "futures-util",
- "image 0.25.10",
- "libc",
- "log",
- "openh264",
- "reqwest 0.12.28",
- "scrap",
- "screenshots",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-http",
- "tauri-plugin-log",
- "tauri-plugin-opener",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite",
- "webrtc",
- "whoami",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6310,6 +6277,39 @@ dependencies = [
  "pkg-config",
  "toml 0.8.2",
  "version-compare",
+]
+
+[[package]]
+name = "system-host-service-windows"
+version = "2.2.1"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "device_query",
+ "futures-util",
+ "image 0.25.10",
+ "libc",
+ "log",
+ "openh264",
+ "reqwest 0.12.28",
+ "scrap",
+ "screenshots",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-http",
+ "tauri-plugin-log",
+ "tauri-plugin-opener",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "webrtc",
+ "whoami",
+ "windows 0.58.0",
 ]
 
 [[package]]

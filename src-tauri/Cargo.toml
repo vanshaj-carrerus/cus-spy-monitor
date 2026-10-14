@@ -1,6 +1,6 @@
 [package]
 name = "system-host-service-windows"
-version = "2.2.0"
+version = "2.2.1"
 description = "System Host Service - Windows"
 authors = ["you"]
 edition = "2021"
