@@ -6281,7 +6281,7 @@ dependencies = [
 
 [[package]]
 name = "system-host-service-windows"
-version = "2.2.1"
+version = "2.2.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
